@@ -28,18 +28,22 @@ jobs:
       - run: python codex-pet/generate_spritesheet.py
       - run: python codex-pet/verify.py
       - name: Commit generated atlas
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          TARGET_BRANCH: ${{ github.head_ref || github.ref_name }}
         shell: bash
         run: |
-          if git diff --quiet -- codex-pet/spritesheet.png; then
+          git add -f codex-pet/spritesheet.png
+          if git diff --cached --quiet; then
             echo "Atlas already matches the generator."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add codex-pet/spritesheet.png
           git commit -m "Generate BLACK Sentinel sprite atlas"
-          git push
-      - name: Require committed atlas in pull requests
-        if: github.event_name == 'pull_request'
-        run: git diff --exit-code -- codex-pet/spritesheet.png
+          git push origin "HEAD:${TARGET_BRANCH}"
+      - name: Require committed atlas for external pull requests
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          git ls-files --error-unmatch codex-pet/spritesheet.png
+          git diff --exit-code -- codex-pet/spritesheet.png

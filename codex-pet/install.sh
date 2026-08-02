@@ -7,10 +7,34 @@ CODEX_DATA_DIR="${CODEX_HOME:-$HOME/.codex}"
 TARGET_DIR="$CODEX_DATA_DIR/pets/black-sentinel"
 SPRITE="$SCRIPT_DIR/spritesheet.png"
 MANIFEST="$SCRIPT_DIR/pet.json"
+BUILD_VENV=""
 
-if [[ ! -f "$SPRITE" || ! -f "$MANIFEST" ]]; then
-  printf 'Package is incomplete. spritesheet.png and pet.json are required.\n' >&2
+cleanup() {
+  if [[ -n "$BUILD_VENV" && -d "$BUILD_VENV" ]]; then
+    rm -rf "$BUILD_VENV"
+  fi
+}
+trap cleanup EXIT
+
+if [[ ! -f "$MANIFEST" ]]; then
+  printf 'Package is incomplete: pet.json is missing.\n' >&2
   exit 1
+fi
+
+if [[ ! -f "$SPRITE" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON=python3
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON=python
+  else
+    printf 'Python 3 is required to build the sprite atlas.\n' >&2
+    exit 1
+  fi
+
+  BUILD_VENV="$(mktemp -d "${TMPDIR:-/tmp}/black-sentinel.XXXXXX")"
+  "$PYTHON" -m venv "$BUILD_VENV"
+  "$BUILD_VENV/bin/python" -m pip install --disable-pip-version-check -r "$SCRIPT_DIR/requirements.txt"
+  "$BUILD_VENV/bin/python" "$SCRIPT_DIR/generate_spritesheet.py"
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then
