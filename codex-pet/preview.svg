@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="420" viewBox="0 0 1280 420">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#070b12"/><stop offset="1" stop-color="#101a2a"/></linearGradient>
+  <radialGradient id="core"><stop stop-color="#efffff"/><stop offset=".25" stop-color="#37e1ff"/><stop offset="1" stop-color="#246cff"/></radialGradient>
+  <filter id="glow"><feGaussianBlur stdDeviation="8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<rect width="1280" height="420" rx="32" fill="url(#bg)"/>
+<g opacity=".17" stroke="#37e1ff"><path d="M0 90h1280M0 210h1280M0 330h1280"/><path d="M160 0v420M400 0v420M640 0v420M880 0v420M1120 0v420"/></g>
+<g transform="translate(120 44)">
+  <ellipse cx="150" cy="320" rx="104" ry="13" fill="#09324b"/>
+  <path d="M92 103 112 35l35 56M208 103 188 35l-35 56" fill="#1c283a" stroke="#4c698c" stroke-width="4"/>
+  <path d="M72 104 95 188l55 30 55-30 23-84-39-58h-78z" fill="#121a27" stroke="#4c698c" stroke-width="5"/>
+  <rect x="102" y="102" width="96" height="40" rx="14" fill="#07121f" stroke="#37e1ff" stroke-width="4" filter="url(#glow)"/>
+  <circle cx="132" cy="122" r="7" fill="#efffff"/><circle cx="168" cy="122" r="7" fill="#efffff"/>
+  <circle cx="150" cy="72" r="9" fill="#8a57ff"/>
+  <rect x="130" y="210" width="40" height="48" rx="13" fill="#080d16" stroke="#246cff" stroke-width="4"/>
+  <path d="M93 232 76 292l74 43 74-43-17-60-57-22z" fill="#1d293b" stroke="#4c698c" stroke-width="5"/>
+  <circle cx="150" cy="274" r="28" fill="url(#core)" filter="url(#glow)"/><circle cx="150" cy="274" r="8" fill="#fff"/>
+  <path d="M93 245 52 270 30 309M207 245l41 25 33 39" fill="none" stroke="#4c698c" stroke-width="13" stroke-linecap="round"/>
+  <circle cx="30" cy="309" r="10" fill="#37e1ff"/><circle cx="281" cy="309" r="10" fill="#37e1ff"/>
+  <path d="M206 294c68 2 74 47 119 18" fill="none" stroke="#4c698c" stroke-width="14" stroke-linecap="round"/><circle cx="326" cy="312" r="10" fill="#37e1ff"/>
+</g>
+<g transform="translate(505 72)">
+  <text x="0" y="72" fill="#e9fbff" font-family="ui-sans-serif,system-ui" font-size="58" font-weight="800">BLACK Sentinel</text>
+  <text x="2" y="120" fill="#77dff5" font-family="ui-monospace,monospace" font-size="22">CODEX PET · SPRITE V2 · 8×11</text>
+  <text x="2" y="185" fill="#adc2d9" font-family="ui-sans-serif,system-ui" font-size="24">Quiet when idle. Obvious when blocked.</text>
+  <g transform="translate(0 230)" font-family="ui-monospace,monospace" font-size="18">
+    <rect width="132" height="42" rx="21" fill="#0b2535" stroke="#37e1ff"/><text x="27" y="27" fill="#9df2ff">WORKING</text>
+    <rect x="148" width="132" height="42" rx="21" fill="#24163e" stroke="#8a57ff"/><text x="177" y="27" fill="#d8c7ff">REVIEW</text>
+    <rect x="296" width="132" height="42" rx="21" fill="#3b151c" stroke="#ff4b5c"/><text x="328" y="27" fill="#ffb3bd">FAILED</text>
+  </g>
+</g>
+</svg>
