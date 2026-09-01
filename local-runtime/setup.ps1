@@ -19,7 +19,7 @@ $ModelRepo = "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
 $ModelFile = "Qwen3.8-27B-Uncensored-IQ4_XS.gguf"
 $ModelSha256 = "53adc4bbed67044d662273356bbf3a50fdec667ac21bbf18d13e5815fbccc7f5"
 $ModelPath = Join-Path $ModelDir $ModelFile
-$ModelUrl = "https://huggingface.co/$ModelRepo/resolve/main/$ModelFile?download=true"
+$ModelUrl = "https://huggingface.co/$ModelRepo/resolve/main/${ModelFile}?download=true"
 
 function Write-Step([string]$Message) {
     Write-Host ""
