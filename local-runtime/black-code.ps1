@@ -139,6 +139,12 @@ $config = [ordered]@{
             models = [ordered]@{
                 $ModelAlias = [ordered]@{
                     name = "Qwen3.8-27B Uncensored IQ4_XS"
+                    reasoning = $false
+                    options = [ordered]@{
+                        chat_template_kwargs = [ordered]@{
+                            enable_thinking = $false
+                        }
+                    }
                     limit = [ordered]@{
                         context = $Context
                         output = 8192
