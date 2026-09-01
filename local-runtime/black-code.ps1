@@ -5,6 +5,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$global:LASTEXITCODE = 0
 
 $InstallBase = Join-Path $env:LOCALAPPDATA "BLACK-Code"
 $RuntimeDir = Join-Path $InstallBase "runtime"
@@ -25,6 +26,25 @@ function Refresh-Path {
     $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
     $user = [Environment]::GetEnvironmentVariable("Path", "User")
     $env:Path = "$machine;$user;$env:ProgramFiles\nodejs;$env:APPDATA\npm;$BinDir"
+}
+
+function Invoke-NvidiaSmi([string]$Query) {
+    $stdout = [IO.Path]::GetTempFileName()
+    $stderr = [IO.Path]::GetTempFileName()
+    try {
+        $process = Start-Process -FilePath (Get-Command "nvidia-smi.exe").Source `
+            -ArgumentList "--query-gpu=$Query", "--format=csv,noheader,nounits" `
+            -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        $output = (Get-Content -Raw -Path $stdout -ErrorAction SilentlyContinue).Trim()
+        if ($process.ExitCode -ne 0 -or -not $output) {
+            $detail = (Get-Content -Raw -Path $stderr -ErrorAction SilentlyContinue).Trim()
+            throw "nvidia-smi failed with exit code $($process.ExitCode): $detail"
+        }
+        return $output
+    }
+    finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $stdout, $stderr
+    }
 }
 
 function Find-FreePort([int]$Start, [int]$End) {
@@ -62,10 +82,7 @@ function Ensure-Installed {
 Ensure-Installed
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
-$gpuLine = & nvidia-smi.exe --query-gpu=name,memory.total,memory.free --format=csv,noheader,nounits 2>$null | Select-Object -First 1
-if ($LASTEXITCODE -ne 0 -or -not $gpuLine) {
-    throw "nvidia-smi failed. NVIDIA GPU/driver is required."
-}
+$gpuLine = ((Invoke-NvidiaSmi "name,memory.total,memory.free") -split "`r?`n")[0]
 $gpuParts = $gpuLine -split ',' | ForEach-Object { $_.Trim() }
 $gpuName = $gpuParts[0]
 $totalVram = [int]$gpuParts[1]
