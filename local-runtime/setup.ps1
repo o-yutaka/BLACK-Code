@@ -5,6 +5,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$global:LASTEXITCODE = 0
 
 $InstallBase = Join-Path $env:LOCALAPPDATA "BLACK-Code"
 $RuntimeDir = Join-Path $InstallBase "runtime"
@@ -24,6 +25,25 @@ $ModelUrl = "https://huggingface.co/$ModelRepo/resolve/main/${ModelFile}?downloa
 function Write-Step([string]$Message) {
     Write-Host ""
     Write-Host "==> $Message" -ForegroundColor Cyan
+}
+
+function Invoke-NvidiaSmi([string]$Query) {
+    $stdout = [IO.Path]::GetTempFileName()
+    $stderr = [IO.Path]::GetTempFileName()
+    try {
+        $process = Start-Process -FilePath (Get-Command "nvidia-smi.exe").Source `
+            -ArgumentList "--query-gpu=$Query", "--format=csv,noheader,nounits" `
+            -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        $output = (Get-Content -Raw -Path $stdout -ErrorAction SilentlyContinue).Trim()
+        if ($process.ExitCode -ne 0 -or -not $output) {
+            $detail = (Get-Content -Raw -Path $stderr -ErrorAction SilentlyContinue).Trim()
+            throw "nvidia-smi failed with exit code $($process.ExitCode): $detail"
+        }
+        return $output
+    }
+    finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $stdout, $stderr
+    }
 }
 
 function Refresh-Path {
@@ -78,10 +98,7 @@ New-Item -ItemType Directory -Force -Path $RuntimeDir, $LauncherDir, $BinDir, $L
 
 Write-Step "Checking NVIDIA GPU"
 Require-Command "nvidia-smi.exe" "Install or update the NVIDIA driver first."
-$gpuInfo = & nvidia-smi.exe --query-gpu=name,memory.total --format=csv,noheader,nounits 2>$null
-if ($LASTEXITCODE -ne 0 -or -not $gpuInfo) {
-    throw "nvidia-smi could not read the NVIDIA GPU."
-}
+$gpuInfo = Invoke-NvidiaSmi "name,memory.total"
 Write-Host $gpuInfo
 
 Write-Step "Checking curl"
