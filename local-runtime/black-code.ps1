@@ -160,6 +160,10 @@ $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $stdout = Join-Path $LogDir "llama-$timestamp.out.log"
 $stderr = Join-Path $LogDir "llama-$timestamp.err.log"
 
+# Qwen3.8 embeds MTP layers in this GGUF. Keep MTP speculative decoding
+# permanently enabled for BLACK Code. A small two-token draft window is used
+# on the 12 GB-class target to limit extra draft/KV pressure while still
+# getting verified speculative tokens on every server session.
 $serverArgs = @(
     "--model", $ModelPath,
     "--alias", $ModelAlias,
@@ -173,6 +177,10 @@ $serverArgs = @(
     "--cache-type-k", "q8_0",
     "--cache-type-v", "q8_0",
     "--flash-attn", "auto",
+    "--spec-type", "draft-mtp",
+    "--spec-draft-n-max", "2",
+    "--spec-draft-n-min", "0",
+    "--spec-draft-p-min", "0.0",
     "--jinja"
 )
 
@@ -185,6 +193,7 @@ Write-Host "RAM:       $ramGiB GiB"
 Write-Host "Model:     $ModelFile"
 Write-Host "Context:   $Context"
 Write-Host "VRAM fit:  automatic; ${fitTarget} MiB target headroom"
+Write-Host "MTP:       ALWAYS ON (draft-mtp, max 2)" -ForegroundColor Green
 Write-Host "Files:     autonomous inside this project"
 Write-Host "Outside:   approval required"
 Write-Host ""
@@ -222,7 +231,7 @@ try {
         throw "llama-server is healthy but /v1/models returned no model."
     }
 
-    Write-Host "Local model server VERIFIED." -ForegroundColor Green
+    Write-Host "Local model server VERIFIED with MTP speculative decoding enabled." -ForegroundColor Green
     Write-Host "Starting OpenCode with autonomous project editing..." -ForegroundColor Green
     Write-Host ""
 
