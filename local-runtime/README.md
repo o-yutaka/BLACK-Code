@@ -60,6 +60,19 @@ black-code -Context 32768
 
 The KV cache uses `q8_0` for both K and V.
 
+## MTP speculative decoding
+
+MTP is permanently enabled for the Qwen3.8 local runtime. Every `black-code` server session starts llama.cpp with:
+
+```text
+--spec-type draft-mtp
+--spec-draft-n-max 2
+--spec-draft-n-min 0
+--spec-draft-p-min 0.0
+```
+
+The two-token draft window is the default for the RTX 3060 12 GB target so speculative decoding stays enabled while limiting extra draft/KV memory pressure. There is no normal BLACK Code fallback that silently disables MTP.
+
 ## Diagnostics
 
 ```powershell
@@ -68,4 +81,4 @@ powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\BLACK-Code\launcher\
 
 ## Runtime boundaries
 
-The local model server binds only to `127.0.0.1`. The selected GGUF contains MTP data, but speculative MTP decoding is not enabled by default; the first target is a stable coding-agent path on the actual 10 GB VRAM / 32 GB RAM machine.
+The local model server binds only to `127.0.0.1`. Qwen long-form thinking remains disabled by default through `enable_thinking=false`; this is independent from MTP speculative decoding, which remains enabled.
