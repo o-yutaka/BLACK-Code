@@ -17,9 +17,9 @@ $BinDir = Join-Path $InstallBase "bin"
 $FabricEvidenceDir = Join-Path $RuntimeDir "execution-fabric"
 
 $ServerExe = Join-Path $LlamaDir "llama-server.exe"
-$ModelFile = "Qwen3.8-27B-Uncensored-IQ4_XS.gguf"
+$ModelFile = "Qwen3.8-27B-Uncensored-IQ2_M.gguf"
 $ModelPath = Join-Path $ModelDir $ModelFile
-$ModelAlias = "qwen3.8-27b-uncensored"
+$ModelAlias = "qwen3.8-27b-uncensored-iq2m"
 $ProviderId = "black-local"
 $ModelId = "$ProviderId/$ModelAlias"
 
@@ -110,13 +110,13 @@ if ($Context -eq 0) {
 }
 
 if ($totalVram -le 12288) {
-    $fitTarget = 1536
+    $fitTarget = 1024
 }
 elseif ($totalVram -le 16384) {
-    $fitTarget = 1280
+    $fitTarget = 1024
 }
 else {
-    $fitTarget = 1024
+    $fitTarget = 768
 }
 
 $projectIdentity = Get-BlackCodeProjectIdentity (Get-Location).Path
@@ -157,7 +157,7 @@ $config = [ordered]@{
             }
             models = [ordered]@{
                 $ModelAlias = [ordered]@{
-                    name = "Qwen3.8-27B Uncensored IQ4_XS"
+                    name = "Qwen3.8-27B Uncensored IQ2_M"
                     reasoning = $false
                     options = [ordered]@{
                         chat_template_kwargs = [ordered]@{
@@ -179,11 +179,11 @@ $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $stdout = Join-Path $LogDir "llama-$timestamp.out.log"
 $stderr = Join-Path $LogDir "llama-$timestamp.err.log"
 
-# Measured-fast decoding profile:
-# - Keep Qwen3.8 embedded MTP always enabled with a four-token draft window.
-# - Do not stack ngram-mod: the combined agentic profile regressed measured end-to-end time.
-# - Do not force cache-reuse: repeated-request cache behavior can regress this workload.
-# BLACK Execution Fabric remains active at the agent/tool layer.
+# IQ2_M speed profile:
+# - 10.6 GB 27B quant to keep substantially more of the model on the 12 GB RTX 3060.
+# - Fused Qwen3.8 MTP remains enabled. Published IQ2_M code measurements favor n_max=2
+#   among tested widths, so BLACK Code uses MTP2 for the speed-first default.
+# - ngram-mod and forced cache-reuse remain disabled after agentic regressions.
 $serverArgs = @(
     "--model", $ModelPath,
     "--alias", $ModelAlias,
@@ -198,7 +198,7 @@ $serverArgs = @(
     "--cache-type-v", "q8_0",
     "--flash-attn", "auto",
     "--spec-type", "draft-mtp",
-    "--spec-draft-n-max", "4",
+    "--spec-draft-n-max", "2",
     "--spec-draft-n-min", "0",
     "--spec-draft-p-min", "0.0",
     "--jinja"
@@ -213,7 +213,8 @@ Write-Host "RAM:       $ramGiB GiB"
 Write-Host "Model:     $ModelFile"
 Write-Host "Context:   $Context"
 Write-Host ("VRAM fit:  automatic; {0} MiB target headroom" -f $fitTarget)
-Write-Host "Spec:      MTP max 4 ALWAYS ON (measured-fast)" -ForegroundColor Green
+Write-Host "Quant:     IQ2_M 10.6 GB speed/memory profile" -ForegroundColor Green
+Write-Host "Spec:      MTP max 2 ALWAYS ON" -ForegroundColor Green
 Write-Host "N-gram:    OFF by default (measured regression)"
 Write-Host "Cache:     llama default; forced cache-reuse OFF"
 Write-Host "Fabric:    $($profileEnvelope.profile.profile_name) [$($profileEnvelope.canonical_hash.Substring(0, 12))]" -ForegroundColor Green
@@ -255,7 +256,7 @@ try {
         throw "llama-server is healthy but /v1/models returned no model."
     }
 
-    Write-Host "Local model server VERIFIED with BLACK Execution Fabric + measured-fast MTP." -ForegroundColor Green
+    Write-Host "Local model server VERIFIED with IQ2_M + BLACK Execution Fabric." -ForegroundColor Green
     Write-Host "Starting OpenCode with autonomous project editing..." -ForegroundColor Green
     Write-Host ""
 
