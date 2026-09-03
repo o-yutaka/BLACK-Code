@@ -12,6 +12,15 @@ function Assert-Contains([string]$Path, [string[]]$Needles) {
     }
 }
 
+function Assert-NotContains([string]$Path, [string[]]$Needles) {
+    $content = Get-Content -LiteralPath $Path -Raw
+    foreach ($needle in $Needles) {
+        if ($content.Contains($needle)) {
+            throw "Rejected runtime contract '$needle' is present in $Path"
+        }
+    }
+}
+
 $files = @(
     (Join-Path $RuntimeRoot "black-code.ps1"),
     (Join-Path $RuntimeRoot "setup.ps1"),
@@ -46,24 +55,34 @@ foreach ($file in $files) {
 
 $launcher = Join-Path $RuntimeRoot "black-code.ps1"
 Assert-Contains $launcher @(
-    'draft-mtp,ngram-mod',
+    '"--spec-type", "draft-mtp"',
     '--spec-draft-n-max',
     '"4"',
-    '--spec-ngram-mod-n-match',
-    '--cache-reuse',
     'black-code-execution.md',
     'New-BlackCodeExecutionProfile',
-    'Write-BlackCodeSessionEvidence'
+    'Write-BlackCodeSessionEvidence',
+    'MTP max 4 ALWAYS ON (measured-fast)',
+    'N-gram:    OFF by default',
+    'forced cache-reuse OFF'
+)
+Assert-NotContains $launcher @(
+    '"--spec-type", "draft-mtp,ngram-mod"',
+    '"--spec-ngram-mod-n-match"',
+    '"--cache-reuse"'
 )
 
 $fabric = Join-Path $RuntimeRoot "execution-fabric.ps1"
 Assert-Contains $fabric @(
-    'black-execution-fabric-v1',
+    'black-execution-fabric-measured-fast-v1',
     'task.atomize',
     'work.dedupe-overlap',
     'context.reuse-session',
     'tool.prefetch-batch',
-    'verify.targeted-then-broad',
+    'decode.mtp4',
+    'rejected_atoms',
+    'decode.ngram-mod',
+    'prompt.cache-reuse-256',
+    'reject_regressing_atoms = $true',
     'verification_status = "UNVERIFIED"',
     'canonical_hash'
 )
@@ -84,8 +103,7 @@ $setup = Join-Path $RuntimeRoot "setup.ps1"
 Assert-Contains $setup @(
     'execution-fabric.ps1',
     'black-code-execution.md',
-    'execution_fabric = "black-execution-fabric-v1"',
     'mtp_draft_max = 4'
 )
 
-Write-Host "BLACK CODE EXECUTION FABRIC STATIC VERIFY: PASS" -ForegroundColor Green
+Write-Host "BLACK CODE MEASURED-FAST EXECUTION FABRIC STATIC VERIFY: PASS" -ForegroundColor Green
