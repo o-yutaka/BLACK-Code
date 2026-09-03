@@ -44,8 +44,8 @@ function New-BlackCodeExecutionProfile(
     [int]$FitTargetMiB
 ) {
     $body = [ordered]@{
-        schema_version = "1.1"
-        profile_name = "black-execution-fabric-measured-fast-v1"
+        schema_version = "1.2"
+        profile_name = "black-execution-fabric-iq2m-speed-v1"
         design_source = "BLACK atomize/overlap/recompose/utility/learning-policy pattern; copied as design only"
         authority = [ordered]@{
             may_edit_project = $true
@@ -57,7 +57,7 @@ function New-BlackCodeExecutionProfile(
             "work.dedupe-overlap",
             "context.reuse-session",
             "tool.prefetch-batch",
-            "decode.mtp4",
+            "decode.iq2m-mtp2",
             "verify.targeted-then-broad",
             "experience.session-evidence"
         )
@@ -71,11 +71,17 @@ function New-BlackCodeExecutionProfile(
                 atom = "prompt.cache-reuse-256"
                 reason = "measured_agentic_regression_or_unproven_benefit"
                 default_enabled = $false
+            },
+            [ordered]@{
+                atom = "decode.mtp4-on-iq2m"
+                reason = "published_iq2m_code_benchmark_favors_mtp2_among_tested_widths"
+                default_enabled = $false
             }
         )
         inference = [ordered]@{
+            quantization = "IQ2_M"
             speculative_types = @("draft-mtp")
-            mtp_draft_max = 4
+            mtp_draft_max = 2
             mtp_draft_min = 0
             mtp_probability_min = 0.0
             forced_cache_reuse = $false
