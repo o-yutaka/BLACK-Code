@@ -15,6 +15,7 @@ $ModelDir = Join-Path $RuntimeDir "models"
 $LogDir = Join-Path $RuntimeDir "logs"
 $BinDir = Join-Path $InstallBase "bin"
 $FabricEvidenceDir = Join-Path $RuntimeDir "execution-fabric"
+$RepoIndexRoot = Join-Path $RuntimeDir "repo-index"
 
 $ServerExe = Join-Path $LlamaDir "llama-server.exe"
 $ModelFile = "Qwen3.8-27B-Uncensored-IQ2_M.gguf"
@@ -52,9 +53,7 @@ function Find-FreePort([int]$Start, [int]$End) {
     for ($p = $Start; $p -le $End; $p++) {
         try {
             $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $p)
-            $listener.Start()
-            $listener.Stop()
-            return $p
+            $listener.Start(); $listener.Stop(); return $p
         }
         catch {}
     }
@@ -69,6 +68,14 @@ function Resolve-SetupScript {
     throw "setup.ps1 was not found. Re-clone BLACK-Code or restore the local launcher."
 }
 
+function Resolve-RuntimeFile([string]$Name) {
+    $near = Join-Path $PSScriptRoot $Name
+    if (Test-Path $near) { return $near }
+    $installed = Join-Path $LauncherDir $Name
+    if (Test-Path $installed) { return $installed }
+    throw "$Name was not found. Run BLACK Code setup from the latest repository checkout."
+}
+
 function Ensure-Installed {
     Refresh-Path
     $opencode = Get-Command "opencode" -ErrorAction SilentlyContinue
@@ -80,93 +87,59 @@ function Ensure-Installed {
     }
 }
 
-function Resolve-FabricFile([string]$Name) {
-    $near = Join-Path $PSScriptRoot $Name
-    if (Test-Path $near) { return $near }
-    $installed = Join-Path $LauncherDir $Name
-    if (Test-Path $installed) { return $installed }
-    throw "$Name was not found. Run BLACK Code setup from the latest repository checkout."
-}
-
-function Get-BlackCodeTrackedFileCount([string]$ProjectRoot) {
-    $git = Get-Command "git.exe" -ErrorAction SilentlyContinue
-    if (-not $git) { $git = Get-Command "git" -ErrorAction SilentlyContinue }
-    if (-not $git) { return $null }
-
-    try {
-        $files = @(& $git.Source -C $ProjectRoot ls-files 2>$null)
-        if ($LASTEXITCODE -eq 0) { return $files.Count }
-    }
-    catch {}
-    return $null
-}
-
 Ensure-Installed
-New-Item -ItemType Directory -Force -Path $LogDir, $FabricEvidenceDir | Out-Null
+New-Item -ItemType Directory -Force -Path $LogDir, $FabricEvidenceDir, $RepoIndexRoot | Out-Null
 
-$fabricScript = Resolve-FabricFile "execution-fabric.ps1"
-. $fabricScript
-$instructionSource = Resolve-FabricFile "black-code-execution.md"
+. (Resolve-RuntimeFile "execution-fabric.ps1")
+. (Resolve-RuntimeFile "repo-index.ps1")
+
+$projectRoot = (Get-Location).Path
+$repoIndex = Get-BlackCodeRepoIndex -ProjectRoot $projectRoot -IndexRoot $RepoIndexRoot
+$trackedFileCount = $repoIndex.index.tracked_file_count
+
+$instructionSource = Resolve-RuntimeFile "black-code-execution.md"
 $instructionRuntimePath = Join-Path $RuntimeDir "black-code-execution.md"
+$repoContextRuntimePath = Join-Path $RuntimeDir "repo-context.md"
 Copy-Item -Force $instructionSource $instructionRuntimePath
+Copy-Item -Force $repoIndex.context_path $repoContextRuntimePath
 
 $gpuLine = ((Invoke-NvidiaSmi "name,memory.total,memory.free") -split "`r?`n")[0]
 $gpuParts = $gpuLine -split ',' | ForEach-Object { $_.Trim() }
 $gpuName = $gpuParts[0]
 $totalVram = [int]$gpuParts[1]
 $freeVram = [int]$gpuParts[2]
-
 $ramBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
 $ramGiB = [Math]::Round($ramBytes / 1GB, 1)
-$projectRoot = (Get-Location).Path
-$trackedFileCount = Get-BlackCodeTrackedFileCount $projectRoot
 $contextReason = "explicit"
 
 if ($Context -eq 0) {
     if ($totalVram -le 12288) {
         if ($null -ne $trackedFileCount -and $trackedFileCount -le 150) {
-            $Context = 8192
-            $contextReason = "auto-small-repo"
+            $Context = 8192; $contextReason = "auto-small-repo"
         }
         elseif ($null -ne $trackedFileCount -and $trackedFileCount -le 800) {
-            $Context = 12288
-            $contextReason = "auto-medium-repo"
+            $Context = 12288; $contextReason = "auto-medium-repo"
         }
         else {
-            $Context = 16384
-            $contextReason = "auto-large-repo"
+            $Context = 16384; $contextReason = "auto-large-repo"
         }
     }
     elseif ($ramGiB -lt 40) {
-        $Context = 24576
-        $contextReason = "auto-ram"
+        $Context = 24576; $contextReason = "auto-ram"
     }
     else {
-        $Context = 32768
-        $contextReason = "auto-ram"
+        $Context = 32768; $contextReason = "auto-ram"
     }
 }
 
-if ($Context -le 8192) {
-    $OutputLimit = 4096
-}
-elseif ($Context -le 12288) {
-    $OutputLimit = 6144
-}
-else {
-    $OutputLimit = 8192
-}
+if ($Context -le 8192) { $OutputLimit = 4096 }
+elseif ($Context -le 12288) { $OutputLimit = 6144 }
+else { $OutputLimit = 8192 }
 
-if ($totalVram -le 16384) {
-    $fitTarget = 1024
-}
-else {
-    $fitTarget = 768
-}
+if ($totalVram -le 16384) { $fitTarget = 1024 } else { $fitTarget = 768 }
 
 $projectIdentity = Get-BlackCodeProjectIdentity $projectRoot
 $profileEnvelope = New-BlackCodeExecutionProfile -Context $Context -FitTargetMiB $fitTarget
-
 $Port = Find-FreePort 18080 18099
 $BaseUrl = "http://127.0.0.1:$Port/v1"
 $HealthUrl = "http://127.0.0.1:$Port/health"
@@ -175,44 +148,23 @@ $ConfigPath = Join-Path $RuntimeDir "opencode.runtime.json"
 $config = [ordered]@{
     '$schema' = "https://opencode.ai/config.json"
     model = $ModelId
-    instructions = @("black-code-execution.md")
+    instructions = @("black-code-execution.md", "repo-context.md")
     permission = [ordered]@{
-        read = "allow"
-        edit = "allow"
-        glob = "allow"
-        grep = "allow"
-        list = "allow"
-        bash = "allow"
-        task = "allow"
-        todowrite = "allow"
-        webfetch = "allow"
-        websearch = "allow"
-        lsp = "allow"
-        skill = "allow"
-        external_directory = "ask"
-        doom_loop = "ask"
+        read = "allow"; edit = "allow"; glob = "allow"; grep = "allow"; list = "allow"
+        bash = "allow"; task = "allow"; todowrite = "allow"; webfetch = "allow"; websearch = "allow"
+        lsp = "allow"; skill = "allow"; external_directory = "ask"; doom_loop = "ask"
     }
     provider = [ordered]@{
         $ProviderId = [ordered]@{
             npm = "@ai-sdk/openai-compatible"
             name = "BLACK Code Local Qwen 3.8"
-            options = [ordered]@{
-                baseURL = $BaseUrl
-                apiKey = "local"
-            }
+            options = [ordered]@{ baseURL = $BaseUrl; apiKey = "local" }
             models = [ordered]@{
                 $ModelAlias = [ordered]@{
                     name = "Qwen3.8-27B Uncensored IQ2_M"
                     reasoning = $false
-                    options = [ordered]@{
-                        chat_template_kwargs = [ordered]@{
-                            enable_thinking = $false
-                        }
-                    }
-                    limit = [ordered]@{
-                        context = $Context
-                        output = $OutputLimit
-                    }
+                    options = [ordered]@{ chat_template_kwargs = [ordered]@{ enable_thinking = $false } }
+                    limit = [ordered]@{ context = $Context; output = $OutputLimit }
                 }
             }
         }
@@ -223,12 +175,6 @@ $config | ConvertTo-Json -Depth 12 | Set-Content -Encoding UTF8 $ConfigPath
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $stdout = Join-Path $LogDir "llama-$timestamp.out.log"
 $stderr = Join-Path $LogDir "llama-$timestamp.err.log"
-
-# IQ2_M speed profile:
-# - 10.6 GB quant keeps substantially more of the 27B model on a 12 GB RTX 3060.
-# - Auto context avoids paying 16K KV/prefill cost for small repositories.
-# - Fused Qwen3.8 MTP stays on at n_max=2, the publisher's fastest tested IQ2_M code width.
-# - ngram-mod, forced cache-reuse, and explicit tensor split stay disabled.
 $serverArgs = @(
     "--model", $ModelPath,
     "--alias", $ModelAlias,
@@ -256,7 +202,8 @@ Write-Host "GPU:       $gpuName"
 Write-Host "VRAM:      $freeVram / $totalVram MiB free"
 Write-Host "RAM:       $ramGiB GiB"
 Write-Host "Model:     $ModelFile"
-Write-Host "Files:     $trackedFileCount tracked"
+Write-Host "Index:     $($repoIndex.index.cache_status) / $trackedFileCount tracked" -ForegroundColor Green
+Write-Host "Delta:     $(@($repoIndex.index.changed_files).Count) changed / $(@($repoIndex.index.likely_tests).Count) likely tests"
 Write-Host "Context:   $Context ($contextReason)"
 Write-Host "Output:    $OutputLimit max tokens"
 Write-Host ("VRAM fit:  automatic; {0} MiB target headroom" -f $fitTarget)
@@ -282,29 +229,21 @@ try {
             if (Test-Path $stderr) { Get-Content $stderr -Tail 150 }
             throw "llama-server failed to start."
         }
-
         try {
             $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2
-            if ($health) {
-                $ready = $true
-                break
-            }
+            if ($health) { $ready = $true; break }
         }
         catch {}
-
         if (($i % 10) -eq 0) { Write-Host -NoNewline "." }
         Start-Sleep -Seconds 1
     }
 
     Write-Host ""
     if (-not $ready) { throw "llama-server did not become healthy." }
-
     $models = Invoke-RestMethod -Uri "$BaseUrl/models" -TimeoutSec 10
-    if (-not $models.data) {
-        throw "llama-server is healthy but /v1/models returned no model."
-    }
+    if (-not $models.data) { throw "llama-server is healthy but /v1/models returned no model." }
 
-    Write-Host "Local model server VERIFIED with IQ2_M + BLACK Execution Fabric." -ForegroundColor Green
+    Write-Host "Local model server VERIFIED with IQ2_M + persistent repo delta index." -ForegroundColor Green
     Write-Host "Starting OpenCode with autonomous project editing..." -ForegroundColor Green
     Write-Host ""
 
@@ -319,7 +258,6 @@ finally {
         Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
         $server.WaitForExit()
     }
-
     $sessionCompletedAt = Get-Date
     try {
         Write-BlackCodeSessionEvidence `
@@ -335,9 +273,7 @@ finally {
             -StdoutLog $stdout `
             -StderrLog $stderr
     }
-    catch {
-        Write-Warning "BLACK Execution Fabric evidence write failed: $($_.Exception.Message)"
-    }
+    catch { Write-Warning "BLACK Execution Fabric evidence write failed: $($_.Exception.Message)" }
 }
 
 exit $exitCode
