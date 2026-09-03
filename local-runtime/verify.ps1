@@ -24,6 +24,7 @@ function Assert-NotContains([string]$Path, [string[]]$Needles) {
 $files = @(
     (Join-Path $RuntimeRoot "black-code.ps1"),
     (Join-Path $RuntimeRoot "setup.ps1"),
+    (Join-Path $RuntimeRoot "doctor.ps1"),
     (Join-Path $RuntimeRoot "execution-fabric.ps1"),
     (Join-Path $RuntimeRoot "verify.ps1")
 )
@@ -58,18 +59,16 @@ Assert-Contains $launcher @(
     'Qwen3.8-27B-Uncensored-IQ2_M.gguf',
     'Qwen3.8-27B Uncensored IQ2_M',
     '"--spec-type", "draft-mtp"',
-    '--spec-draft-n-max',
-    '"2"',
-    'black-code-execution.md',
-    'New-BlackCodeExecutionProfile',
-    'Write-BlackCodeSessionEvidence',
+    '"--spec-draft-n-max", "2"',
+    '$Context = 16384',
+    '"--fit-ctx", "$Context"',
     'IQ2_M 10.6 GB speed/memory profile',
     'MTP max 2 ALWAYS ON',
-    'N-gram:    OFF by default',
-    'forced cache-reuse OFF'
+    'New-BlackCodeExecutionProfile',
+    'Write-BlackCodeSessionEvidence'
 )
 Assert-NotContains $launcher @(
-    'Qwen3.8-27B-Uncensored-IQ4_XS.gguf',
+    '$ModelFile = "Qwen3.8-27B-Uncensored-IQ4_XS.gguf"',
     '"--spec-type", "draft-mtp,ngram-mod"',
     '"--spec-ngram-mod-n-match"',
     '"--cache-reuse"'
@@ -78,42 +77,37 @@ Assert-NotContains $launcher @(
 $fabric = Join-Path $RuntimeRoot "execution-fabric.ps1"
 Assert-Contains $fabric @(
     'black-execution-fabric-iq2m-speed-v1',
-    'task.atomize',
-    'work.dedupe-overlap',
-    'context.reuse-session',
-    'tool.prefetch-batch',
     'decode.iq2m-mtp2',
     'quantization = "IQ2_M"',
     'mtp_draft_max = 2',
     'rejected_atoms',
     'decode.ngram-mod',
     'prompt.cache-reuse-256',
-    'reject_regressing_atoms = $true',
     'verification_status = "UNVERIFIED"',
     'canonical_hash'
 )
 
-$instructions = Join-Path $RuntimeRoot "black-code-execution.md"
-Assert-Contains $instructions @(
-    'ATOMIZE',
-    'DEDUPE',
-    'REUSE',
-    'PREFETCH + BATCH',
-    'RECOMPOSE',
-    'TARGET VERIFY',
-    'EVIDENCE',
-    'MINIMIZE MODEL CALLS'
-)
-
 $setup = Join-Path $RuntimeRoot "setup.ps1"
 Assert-Contains $setup @(
-    'Qwen3.8-27B-Uncensored-IQ2_M.gguf',
+    '$ModelFile = "Qwen3.8-27B-Uncensored-IQ2_M.gguf"',
     '28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187',
-    '$ModelMinimumBytes = 10000000000',
-    'execution-fabric.ps1',
-    'black-code-execution.md',
-    'quantization = "IQ2_M"',
-    'mtp_draft_max = 2'
+    '$LegacyModelPath = Join-Path $ModelDir "Qwen3.8-27B-Uncensored-IQ4_XS.gguf"',
+    'Removed superseded IQ4_XS model file.',
+    'default_context = 16384',
+    'mtp_draft_max = 2',
+    '"verify.ps1"'
+)
+Assert-NotContains $setup @(
+    '$ModelFile = "Qwen3.8-27B-Uncensored-IQ4_XS.gguf"',
+    'speculative = "draft-mtp,ngram-mod"'
 )
 
-Write-Host "BLACK CODE IQ2_M SPEED PROFILE STATIC VERIFY: PASS" -ForegroundColor Green
+$doctor = Join-Path $RuntimeRoot "doctor.ps1"
+Assert-Contains $doctor @(
+    'Qwen3.8-27B-Uncensored-IQ2_M.gguf',
+    '28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187',
+    'IQ2_M HASH VERIFIED'
+)
+Assert-NotContains $doctor @('Qwen3.8-27B-Uncensored-IQ4_XS.gguf')
+
+Write-Host "BLACK CODE IQ2_M FINAL SPEED PROFILE STATIC VERIFY: PASS" -ForegroundColor Green

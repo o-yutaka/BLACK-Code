@@ -106,7 +106,15 @@ $freeVram = [int]$gpuParts[2]
 $ramBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
 $ramGiB = [Math]::Round($ramBytes / 1GB, 1)
 if ($Context -eq 0) {
-    if ($ramGiB -lt 40) { $Context = 24576 } else { $Context = 32768 }
+    if ($totalVram -le 12288) {
+        $Context = 16384
+    }
+    elseif ($ramGiB -lt 40) {
+        $Context = 24576
+    }
+    else {
+        $Context = 32768
+    }
 }
 
 if ($totalVram -le 12288) {
@@ -193,7 +201,7 @@ $serverArgs = @(
     "--ctx-size", "$Context",
     "--fit", "on",
     "--fit-target", "$fitTarget",
-    "--fit-ctx", "16384",
+    "--fit-ctx", "$Context",
     "--cache-type-k", "q8_0",
     "--cache-type-v", "q8_0",
     "--flash-attn", "auto",

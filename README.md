@@ -8,75 +8,44 @@ Self-evolving autonomous system with:
 
 ## Local coding runtime — Qwen3.8-27B Uncensored
 
-BLACK Code now has a Windows local coding path built around:
+BLACK Code's canonical Windows local coding runtime uses:
 
 - **Qwen3.8-27B-Uncensored IQ2_M** (~10.6 GB)
 - llama.cpp CUDA
-- automatic VRAM fitting with system-RAM spillover
 - OpenCode as the coding-agent interface
-- autonomous file creation/editing and project shell commands
+- autonomous project-local editing and shell commands
 - BLACK-derived execution optimization without importing or modifying BLACK itself
 
-The model and runtime binaries are stored outside Git under `%LOCALAPPDATA%\BLACK-Code\runtime`.
+The model and runtime binaries live outside Git under `%LOCALAPPDATA%\BLACK-Code\runtime`.
 
 ### First run
-
-From the BLACK-Code repository on Windows:
 
 ```bat
 BLACK-CODE.cmd
 ```
 
-The first run automatically bootstraps the local runtime, downloads and SHA-256 verifies the GGUF, starts llama.cpp, verifies the local API, and launches OpenCode.
-
-After bootstrap, the user command `black-code` is installed. Open a terminal in any repository you want BLACK Code to work on and run:
+After bootstrap, open any repository and run:
 
 ```bat
 black-code
 ```
 
-Inside that repository, OpenCode is configured to read, create, edit, patch and delete project files through its tools/shell, run build/test/lint/install commands, and iterate without asking for approval on every project-local operation. Access outside the opened repository remains approval-gated.
-
 ### BLACK Execution Fabric
 
-BLACK Code copies the **design pattern** from BLACK's atomization/recomposition/learning path into its own local runtime only:
+BLACK Code copies the design pattern from BLACK's atomization/recomposition/learning path into BLACK Code only:
 
 ```text
 ATOMIZE -> DEDUPE -> REUSE -> PREFETCH/BATCH -> RECOMPOSE -> VERIFY -> RECORD
 ```
 
-The speed-first runtime uses **IQ2_M + fused MTP max 2**. `ngram-mod` and forced `cache-reuse` stay disabled because the combined agentic profile regressed measured end-to-end time. The Execution Fabric still reduces duplicate reads/searches, batches independent work, reuses unchanged observations, and records a canonical profile hash plus session measurements. A clean process exit remains `UNVERIFIED` until real task verification exists.
+The speed-first runtime uses **IQ2_M + fused MTP max 2**. `ngram-mod` and forced `cache-reuse` remain off after measured agentic regressions. On 12 GB VRAM hardware the default context is **16,384** with about **1,024 MiB** fit headroom so more of the 10.6 GB model stays on GPU.
 
-For the target 12 GB VRAM / 32 GB RAM class machine, the default context is 24,576 tokens and llama.cpp dynamically fits the 10.6 GB model into available VRAM while keeping headroom for Windows.
+The previous IQ4_XS runtime is not retained as a selectable BLACK Code profile. Once IQ2_M passes SHA-256 verification, setup removes the superseded local IQ4_XS weight automatically.
+
+A clean process exit remains `UNVERIFIED` until real task verification exists.
 
 See [`local-runtime/README.md`](local-runtime/README.md) for runtime details and diagnostics.
 
 ## BLACK Sentinel — Codex Pet
 
-`codex-pet/` contains a complete Codex V2 companion package designed for BLACK Code.
-
-- Transparent PNG atlas: **1536 × 2288**
-- Grid: **8 × 11 / 88 frames**
-- State-specific signals for idle, work, waiting, review, and failure
-- Safe Windows and macOS/Linux installers with SHA-256 verification
-- Deterministic generator and GitHub Actions validation
-
-### Windows
-
-```powershell
-cd codex-pet
-Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1
-```
-
-### macOS / Linux
-
-```bash
-cd codex-pet
-chmod +x install.sh
-./install.sh
-```
-
-Restart Codex and select **BLACK Sentinel** from custom pets.
-
-See [`codex-pet/README.md`](codex-pet/README.md) for the design contract and validation steps.
+`codex-pet/` contains the BLACK Code Codex V2 companion package. See [`codex-pet/README.md`](codex-pet/README.md) for details.

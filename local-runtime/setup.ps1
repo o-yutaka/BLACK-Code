@@ -23,6 +23,7 @@ $ModelSha256 = "28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187
 $ModelPath = Join-Path $ModelDir $ModelFile
 $ModelUrl = "https://huggingface.co/$ModelRepo/resolve/main/${ModelFile}?download=true"
 $ModelMinimumBytes = 10000000000
+$LegacyModelPath = Join-Path $ModelDir "Qwen3.8-27B-Uncensored-IQ4_XS.gguf"
 
 function Write-Step([string]$Message) {
     Write-Host ""
@@ -193,13 +194,20 @@ if (-not (Test-Model $ModelPath)) {
 $modelSize = [Math]::Round((Get-Item $ModelPath).Length / 1GB, 2)
 Write-Host "Model verified: $ModelFile ($modelSize GiB)"
 
+# IQ2_M is the sole canonical runtime. Remove the superseded IQ4_XS weight only after IQ2_M verifies.
+if (Test-Path $LegacyModelPath) {
+    Remove-Item -Force $LegacyModelPath
+    Write-Host "Removed superseded IQ4_XS model file."
+}
+
 Write-Step "Installing BLACK Code launcher"
 $launcherFiles = @(
     "black-code.ps1",
     "setup.ps1",
     "doctor.ps1",
     "execution-fabric.ps1",
-    "black-code-execution.md"
+    "black-code-execution.md",
+    "verify.ps1"
 )
 foreach ($name in $launcherFiles) {
     $source = Join-Path $PSScriptRoot $name
@@ -235,6 +243,7 @@ $state = [ordered]@{
     mtp_draft_max = 2
     ngram_mod = $false
     forced_cache_reuse = $false
+    default_context = 16384
 }
 $state | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 (Join-Path $RuntimeDir "state.json")
 
