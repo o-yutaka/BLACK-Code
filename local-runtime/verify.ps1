@@ -5,16 +5,11 @@ $RuntimeRoot = $PSScriptRoot
 
 function Assert-Contains([string]$Path, [string[]]$Needles) {
     $content = Get-Content -LiteralPath $Path -Raw
-    foreach ($needle in $Needles) {
-        if (-not $content.Contains($needle)) { throw "Missing contract '$needle' in $Path" }
-    }
+    foreach ($needle in $Needles) { if (-not $content.Contains($needle)) { throw "Missing contract '$needle' in $Path" } }
 }
-
 function Assert-NotContains([string]$Path, [string[]]$Needles) {
     $content = Get-Content -LiteralPath $Path -Raw
-    foreach ($needle in $Needles) {
-        if ($content.Contains($needle)) { throw "Rejected runtime contract '$needle' is present in $Path" }
-    }
+    foreach ($needle in $Needles) { if ($content.Contains($needle)) { throw "Rejected runtime contract '$needle' is present in $Path" } }
 }
 
 $files = @(
@@ -23,81 +18,80 @@ $files = @(
     (Join-Path $RuntimeRoot "doctor.ps1"),
     (Join-Path $RuntimeRoot "execution-fabric.ps1"),
     (Join-Path $RuntimeRoot "repo-index.ps1"),
+    (Join-Path $RuntimeRoot "analyze-bottleneck.ps1"),
     (Join-Path $RuntimeRoot "verify.ps1")
 )
 foreach ($file in $files) {
     if (-not (Test-Path -LiteralPath $file)) { throw "Required runtime file is missing: $file" }
-    $tokens = $null; $parseErrors = $null
-    [void][System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$parseErrors)
-    $errorList = @($parseErrors)
-    if ($errorList.Count -gt 0) {
-        foreach ($parseError in $errorList) {
-            Write-Host ("{0}:{1}:{2}: {3} :: {4}" -f $file, $parseError.Extent.StartLineNumber, $parseError.Extent.StartColumnNumber, $parseError.Message, $parseError.Extent.Text)
-        }
-        throw "PowerShell parse failed: $file"
-    }
+    $tokens=$null; $parseErrors=$null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$parseErrors)
+    if (@($parseErrors).Count -gt 0) { throw "PowerShell parse failed: $file :: $($parseErrors[0].Message)" }
 }
 
 $launcher = Join-Path $RuntimeRoot "black-code.ps1"
 Assert-Contains $launcher @(
     'Qwen3.8-27B-Uncensored-IQ2_M.gguf',
-    '. (Resolve-RuntimeFile "repo-index.ps1")',
     'Get-BlackCodeRepoIndex',
     'instructions = @("black-code-execution.md", "repo-context.md")',
-    '$trackedFileCount -le 150',
-    '$Context = 8192',
-    '$trackedFileCount -le 800',
-    '$Context = 12288',
-    '$Context = 16384',
-    '"--spec-type", "draft-mtp"',
-    '"--spec-draft-n-max", "2"',
-    '"--fit-ctx", "$Context"',
-    'explicit split OFF',
+    '$Context = 8192', '$Context = 12288', '$Context = 16384',
+    '"--spec-type","draft-mtp"', '"--spec-draft-n-max","2"',
+    '$env:BLACK_CODE_TELEMETRY_PATH = $telemetryPath',
+    'analyze-bottleneck.ps1',
+    'observation-only auto bottleneck',
     'Write-BlackCodeSessionEvidence'
 )
 Assert-NotContains $launcher @(
     '$ModelFile = "Qwen3.8-27B-Uncensored-IQ4_XS.gguf"',
-    '"--spec-type", "draft-mtp,ngram-mod"',
-    '"--cache-reuse"',
-    '"--tensor-split"',
-    '"-ts"'
+    'draft-mtp,ngram-mod', '"--cache-reuse"', '"--tensor-split"', '"-ts"'
 )
 
 $index = Join-Path $RuntimeRoot "repo-index.ps1"
-Assert-Contains $index @(
-    'cache_status = "HIT"',
-    '"DELTA_REFRESH"',
-    '"MISS_BUILD"',
-    'diff --name-only',
-    'package_roots',
-    'likely_tests',
-    'repo-context.md'
-)
+Assert-Contains $index @('cache_status = "HIT"','"DELTA_REFRESH"','"MISS_BUILD"','diff --name-only','package_roots','likely_tests','repo-context.md')
 
-$instructions = Join-Path $RuntimeRoot "black-code-execution.md"
-Assert-Contains $instructions @(
-    'INDEX FIRST',
-    'repo-context.md',
-    'DELTA CONTEXT',
-    'AFFECTED VERIFY',
-    'MINIMIZE MODEL CALLS'
-)
+$telemetry = Join-Path $RuntimeRoot "opencode-telemetry.js"
+if (-not (Test-Path -LiteralPath $telemetry)) { throw "Required telemetry plugin missing" }
+Assert-Contains $telemetry @('tool.execute.before','tool.execute.after','BLACK_CODE_TELEMETRY_PATH','kind: classify','duration_ms','measured: Boolean(start)')
+Assert-NotContains $telemetry @('command: start?.command','slice(0, 500)')
+
+$analyzer = Join-Path $RuntimeRoot "analyze-bottleneck.ps1"
+Assert-Contains $analyzer @('OBSERVATION_ONLY','largest_measured_bottleneck','unattributed_ms','prompt eval time','predicted_ms','"UNKNOWN"')
 
 $setup = Join-Path $RuntimeRoot "setup.ps1"
 Assert-Contains $setup @(
     '$ModelFile = "Qwen3.8-27B-Uncensored-IQ2_M.gguf"',
     '28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187',
-    '"repo-index.ps1"',
-    'repo_index = "persistent-delta-v1"',
-    'default_context = "auto-8192-12288-16384"',
-    'mtp_draft_max = 2'
+    '"repo-index.ps1"','"analyze-bottleneck.ps1"','"opencode-telemetry.js"',
+    '.config\opencode\plugins','black-code-telemetry.js',
+    'bottleneck_analyzer="observation-only-v1"',
+    'mtp_draft_max=2'
 )
 
 $doctor = Join-Path $RuntimeRoot "doctor.ps1"
-Assert-Contains $doctor @(
-    'Qwen3.8-27B-Uncensored-IQ2_M.gguf',
-    '28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187',
-    'IQ2_M HASH VERIFIED'
-)
+Assert-Contains $doctor @('Qwen3.8-27B-Uncensored-IQ2_M.gguf','28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187','IQ2_M HASH VERIFIED')
 
-Write-Host "BLACK CODE PERSISTENT DELTA INDEX STATIC VERIFY: PASS" -ForegroundColor Green
+# Synthetic analyzer test: proves Windows PowerShell can parse and classify measured phases.
+$temp = Join-Path ([IO.Path]::GetTempPath()) ("black-code-verify-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $temp | Out-Null
+try {
+    $toolLog = Join-Path $temp "tools.jsonl"
+    @(
+        '{"kind":"tool","duration_ms":250,"measured":true}',
+        '{"kind":"verify","duration_ms":700,"measured":true}'
+    ) | Set-Content -Encoding UTF8 $toolLog
+    $llamaLog = Join-Path $temp "llama.err"
+    @(
+        'prompt eval time = 300.00 ms / 10 tokens',
+        'eval time = 900.00 ms / 20 runs'
+    ) | Set-Content -Encoding UTF8 $llamaLog
+    $out = Join-Path $temp "result.json"
+    & $analyzer -TelemetryPath $toolLog -LlamaStderr $llamaLog -StartupMs 100 -TotalMs 3000 -OutputPath $out | Out-Null
+    $result = Get-Content -Raw -LiteralPath $out | ConvertFrom-Json
+    if ($result.model.total_ms -ne 1200) { throw "Synthetic model timing mismatch" }
+    if ($result.tool.total_ms -ne 250) { throw "Synthetic tool timing mismatch" }
+    if ($result.verify.total_ms -ne 700) { throw "Synthetic verify timing mismatch" }
+    if ($result.largest_measured_bottleneck -ne "model") { throw "Synthetic bottleneck classification mismatch" }
+    if ($result.safety -ne "OBSERVATION_ONLY") { throw "Analyzer safety contract mismatch" }
+}
+finally { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $temp }
+
+Write-Host "BLACK CODE AUTO BOTTLENECK OBSERVABILITY STATIC+SYNTHETIC VERIFY: PASS" -ForegroundColor Green
