@@ -32,8 +32,10 @@ jobs:
               (Resolve-Path $file), [ref]$tokens, [ref]$errors
             ) | Out-Null
             if ($errors.Count -gt 0) {
-              $errors | ForEach-Object { Write-Error "${file}: $($_.Message)" }
-              exit 1
+              foreach ($parseError in $errors) {
+                Write-Host "${file}:$($parseError.Extent.StartLineNumber):$($parseError.Extent.StartColumnNumber): $($parseError.Message) :: $($parseError.Extent.Text)"
+              }
+              throw "PowerShell parse failed for $file"
             }
           }
 
