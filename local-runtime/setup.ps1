@@ -80,9 +80,22 @@ function Download-File([string]$Url, [string]$Destination) {
     if (Test-Path -LiteralPath $partial) {
         $curlArgs = @("-C", "-") + $curlArgs
     }
-    & curl.exe @curlArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "curl failed with exit code $LASTEXITCODE"
+    $curlStdout = [IO.Path]::GetTempFileName()
+    $curlStderr = [IO.Path]::GetTempFileName()
+    try {
+        $curlPath = (Get-Command "curl.exe" -ErrorAction Stop).Source
+        $curlProcess = Start-Process -FilePath $curlPath `
+            -ArgumentList $curlArgs `
+            -Wait -PassThru `
+            -RedirectStandardOutput $curlStdout `
+            -RedirectStandardError $curlStderr
+        if ($curlProcess.ExitCode -ne 0) {
+            $detail = (Get-Content -Raw -Path $curlStderr -ErrorAction SilentlyContinue).Trim()
+            throw "curl failed with exit code $($curlProcess.ExitCode): $detail"
+        }
+    }
+    finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $curlStdout, $curlStderr
     }
     if (-not (Test-Path -LiteralPath $partial)) {
         throw "curl completed without creating the partial download: $partial"
