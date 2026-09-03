@@ -4,9 +4,10 @@ $ErrorActionPreference = "Stop"
 $InstallBase = Join-Path $env:LOCALAPPDATA "BLACK-Code"
 $RuntimeDir = Join-Path $InstallBase "runtime"
 $Server = Join-Path $RuntimeDir "llama\llama-server.exe"
-$Model = Join-Path $RuntimeDir "models\Qwen3.8-27B-Uncensored-IQ4_XS.gguf"
+$Model = Join-Path $RuntimeDir "models\Qwen3.8-27B-Uncensored-IQ2_M.gguf"
+$ExpectedSha = "28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187"
 
-Write-Host "=== BLACK CODE LOCAL DOCTOR ===" -ForegroundColor Cyan
+Write-Host "=== BLACK CODE IQ2_M DOCTOR ===" -ForegroundColor Cyan
 
 Write-Host "`n[NVIDIA]"
 if (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue) {
@@ -32,8 +33,13 @@ if (Test-Path $Model) {
     $hash = (Get-FileHash -Algorithm SHA256 -Path $Model).Hash.ToLowerInvariant()
     Write-Host ("{0:N2} GiB" -f $size)
     Write-Host "SHA256: $hash"
+    if ($hash -eq $ExpectedSha) {
+        Write-Host "IQ2_M HASH VERIFIED" -ForegroundColor Green
+    } else {
+        Write-Host "FAIL: IQ2_M hash mismatch" -ForegroundColor Red
+    }
 } else {
-    Write-Host "FAIL: model missing" -ForegroundColor Red
+    Write-Host "FAIL: IQ2_M model missing" -ForegroundColor Red
 }
 
 Write-Host "`n[OpenCode]"
