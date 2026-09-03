@@ -7,9 +7,7 @@ function Get-BlackCodeSha256([string]$Text) {
         $hash = $sha.ComputeHash($bytes)
         return ([System.BitConverter]::ToString($hash)).Replace("-", "").ToLowerInvariant()
     }
-    finally {
-        $sha.Dispose()
-    }
+    finally { $sha.Dispose() }
 }
 
 function Get-BlackCodeProjectIdentity([string]$ProjectRoot) {
@@ -18,18 +16,14 @@ function Get-BlackCodeProjectIdentity([string]$ProjectRoot) {
     $gitDirty = $null
     $git = Get-Command "git.exe" -ErrorAction SilentlyContinue
     if (-not $git) { $git = Get-Command "git" -ErrorAction SilentlyContinue }
-
     if ($git) {
         $head = (& $git.Source -C $resolved rev-parse HEAD 2>$null | Select-Object -First 1)
         if ($LASTEXITCODE -eq 0 -and $head) {
             $gitHead = ([string]$head).Trim()
             $status = @(& $git.Source -C $resolved status --porcelain=v1 -uno 2>$null)
-            if ($LASTEXITCODE -eq 0) {
-                $gitDirty = $status.Count -gt 0
-            }
+            if ($LASTEXITCODE -eq 0) { $gitDirty = $status.Count -gt 0 }
         }
     }
-
     $basis = if ($gitHead) { "$resolved|$gitHead" } else { $resolved }
     return [ordered]@{
         root = $resolved
@@ -39,14 +33,16 @@ function Get-BlackCodeProjectIdentity([string]$ProjectRoot) {
     }
 }
 
-function New-BlackCodeExecutionProfile(
-    [int]$Context,
-    [int]$FitTargetMiB
-) {
+function New-BlackCodeExecutionProfile([int]$Context, [int]$FitTargetMiB) {
     $body = [ordered]@{
-        schema_version = "1.1"
-        profile_name = "black-execution-fabric-measured-fast-v1"
+        schema_version = "2.0"
+        profile_name = "black-execution-fabric-iq2m-fast-v1"
         design_source = "BLACK atomize/overlap/recompose/utility/learning-policy pattern; copied as design only"
+        model = [ordered]@{
+            family = "Qwen3.8-27B-Uncensored"
+            quant = "IQ2_M"
+            mtp_embedded = $true
+        }
         authority = [ordered]@{
             may_edit_project = $true
             may_edit_outside_project = $false
@@ -57,25 +53,18 @@ function New-BlackCodeExecutionProfile(
             "work.dedupe-overlap",
             "context.reuse-session",
             "tool.prefetch-batch",
-            "decode.mtp4",
+            "decode.mtp2",
             "verify.targeted-then-broad",
             "experience.session-evidence"
         )
         rejected_atoms = @(
-            [ordered]@{
-                atom = "decode.ngram-mod"
-                reason = "measured_agentic_regression"
-                default_enabled = $false
-            },
-            [ordered]@{
-                atom = "prompt.cache-reuse-256"
-                reason = "measured_agentic_regression_or_unproven_benefit"
-                default_enabled = $false
-            }
+            [ordered]@{ atom = "decode.ngram-mod"; reason = "measured_agentic_regression"; default_enabled = $false },
+            [ordered]@{ atom = "prompt.cache-reuse-256"; reason = "measured_agentic_regression_or_unproven_benefit"; default_enabled = $false },
+            [ordered]@{ atom = "model.iq4_xs"; reason = "replaced_by_speed_memory_profile"; default_enabled = $false }
         )
         inference = [ordered]@{
             speculative_types = @("draft-mtp")
-            mtp_draft_max = 4
+            mtp_draft_max = 2
             mtp_draft_min = 0
             mtp_probability_min = 0.0
             forced_cache_reuse = $false
@@ -93,12 +82,8 @@ function New-BlackCodeExecutionProfile(
             reject_regressing_atoms = $true
         }
     }
-
     $canonical = $body | ConvertTo-Json -Depth 12 -Compress
-    return [ordered]@{
-        profile = $body
-        canonical_hash = Get-BlackCodeSha256 $canonical
-    }
+    return [ordered]@{ profile = $body; canonical_hash = Get-BlackCodeSha256 $canonical }
 }
 
 function Write-BlackCodeSessionEvidence(
@@ -115,13 +100,12 @@ function Write-BlackCodeSessionEvidence(
     [string]$StderrLog
 ) {
     New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
-    $durationMs = [Math]::Round(($CompletedAt - $StartedAt).TotalMilliseconds)
     $record = [ordered]@{
         schema_version = "1.0"
         recorded_at = (Get-Date).ToString("o")
         started_at = $StartedAt.ToString("o")
         completed_at = $CompletedAt.ToString("o")
-        duration_ms = $durationMs
+        duration_ms = [Math]::Round(($CompletedAt - $StartedAt).TotalMilliseconds)
         process_exit_code = $ExitCode
         verification_status = "UNVERIFIED"
         profile_name = $ProfileEnvelope.profile.profile_name
@@ -132,10 +116,7 @@ function Write-BlackCodeSessionEvidence(
             free_vram_mib_at_start = $FreeVramMiB
             total_vram_mib = $TotalVramMiB
         }
-        logs = [ordered]@{
-            stdout = $StdoutLog
-            stderr = $StderrLog
-        }
+        logs = [ordered]@{ stdout = $StdoutLog; stderr = $StderrLog }
     }
     $recordHashInput = $record | ConvertTo-Json -Depth 12 -Compress
     $record["canonical_hash"] = Get-BlackCodeSha256 $recordHashInput
