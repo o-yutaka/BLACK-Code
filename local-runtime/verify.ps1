@@ -79,7 +79,7 @@ await hooks["tool.execute.after"](input, {})
     $hookRow = (Get-Content -LiteralPath $hookLog | Select-Object -First 1) | ConvertFrom-Json
     if ($hookRow.kind -ne "verify") { throw "Telemetry hook failed to classify verification" }
     if ($hookRow.measured -ne $true -or $hookRow.duration_ms -lt 0) { throw "Telemetry hook did not emit measured timing" }
-    if ($null -ne $hookRow.command) { throw "Telemetry unexpectedly persisted command content" }
+    if ($hookRow.PSObject.Properties.Name -contains "command") { throw "Telemetry unexpectedly persisted command content" }
 
     # Synthetic analyzer test proves Windows PowerShell decomposition.
     $toolLog = Join-Path $temp "tools.jsonl"
