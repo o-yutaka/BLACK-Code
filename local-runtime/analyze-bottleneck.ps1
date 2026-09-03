@@ -43,7 +43,13 @@ if (Test-Path -LiteralPath $LlamaStderr) {
 
 $modelPromptMs = if ($promptMatches -gt 0) { [Math]::Round($promptMs) } else { $null }
 $modelDecodeMs = if ($decodeMatches -gt 0) { [Math]::Round($decodeMs) } else { $null }
-$modelMs = if ($null -ne $modelPromptMs -or $null -ne $modelDecodeMs) { [Math]::Round(([double]($modelPromptMs ?? 0)) + ([double]($modelDecodeMs ?? 0))) } else { $null }
+if ($null -ne $modelPromptMs -or $null -ne $modelDecodeMs) {
+    $promptValue = if ($null -ne $modelPromptMs) { [double]$modelPromptMs } else { 0.0 }
+    $decodeValue = if ($null -ne $modelDecodeMs) { [double]$modelDecodeMs } else { 0.0 }
+    $modelMs = [Math]::Round($promptValue + $decodeValue)
+} else {
+    $modelMs = $null
+}
 
 $measuredParts = @{
     startup = [double]$StartupMs
@@ -62,6 +68,14 @@ foreach ($name in @("startup","model","tool","verify")) {
 $largest = $candidates | Sort-Object value -Descending | Select-Object -First 1
 $bottleneck = if ($largest) { $largest.name } else { "UNKNOWN" }
 
+$recommendation = switch ($bottleneck) {
+    "model" { "Reduce prompt/model work before changing tool execution." }
+    "tool" { "Reduce or batch non-verification tool calls." }
+    "verify" { "Tighten affected-test selection before broad verification." }
+    "startup" { "Optimize runtime startup/model load path." }
+    default { "Collect more timing evidence before changing the runtime." }
+}
+
 $record = [ordered]@{
     schema_version = "1.0"
     recorded_at = (Get-Date).ToString("o")
@@ -78,13 +92,7 @@ $record = [ordered]@{
     verify = [ordered]@{ total_ms = $verifyMs; count = $verifyCount; status = if ($null -ne $verifyMs) { "MEASURED" } else { "UNKNOWN" } }
     unattributed_ms = [Math]::Round($unattributedMs)
     largest_measured_bottleneck = $bottleneck
-    recommendation = switch ($bottleneck) {
-        "model" { "Reduce prompt/model work before changing tool execution." }
-        "tool" { "Reduce or batch non-verification tool calls." }
-        "verify" { "Tighten affected-test selection before broad verification." }
-        "startup" { "Optimize runtime startup/model load path." }
-        default { "Collect more timing evidence before changing the runtime." }
-    }
+    recommendation = $recommendation
     safety = "OBSERVATION_ONLY"
 }
 
