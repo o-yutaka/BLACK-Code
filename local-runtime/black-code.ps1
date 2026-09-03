@@ -208,14 +208,14 @@ $serverArgs = @(
 )
 
 Write-Host ""
-Write-Host "BLACK CODE — LOCAL QWEN 3.8" -ForegroundColor Magenta
+Write-Host "BLACK CODE - LOCAL QWEN 3.8" -ForegroundColor Magenta
 Write-Host "Project:   $(Get-Location)"
 Write-Host "GPU:       $gpuName"
 Write-Host "VRAM:      $freeVram / $totalVram MiB free"
 Write-Host "RAM:       $ramGiB GiB"
 Write-Host "Model:     $ModelFile"
 Write-Host "Context:   $Context"
-Write-Host "VRAM fit:  automatic; ${fitTarget} MiB target headroom"
+Write-Host ("VRAM fit:  automatic; {0} MiB target headroom" -f $fitTarget)
 Write-Host "Spec:      MTP max 4 + ngram-mod ALWAYS ON" -ForegroundColor Green
 Write-Host "Prefix:    cache-reuse 256"
 Write-Host "Fabric:    $($profileEnvelope.profile.profile_name) [$($profileEnvelope.canonical_hash.Substring(0, 12))]" -ForegroundColor Green
