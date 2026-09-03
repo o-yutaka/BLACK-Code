@@ -1,5 +1,6 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$global:LASTEXITCODE = 0
 
 $RuntimeRoot = $PSScriptRoot
 
@@ -57,7 +58,10 @@ $temp = Join-Path ([IO.Path]::GetTempPath()) ("black-code-verify-" + [guid]::New
 New-Item -ItemType Directory -Force -Path $temp | Out-Null
 try {
     # Execute the OpenCode hook shape with Node as an ESM smoke test.
-    $node = (Get-Command node -ErrorAction Stop).Source
+    $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $nodeCommand) { $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue }
+    if (-not $nodeCommand) { throw "Node.js was not found in PATH." }
+    $node = $nodeCommand.Source
     $pluginMjs = Join-Path $temp "opencode-telemetry.mjs"
     Copy-Item -Force $telemetry $pluginMjs
     $hookLog = Join-Path $temp "hook-tools.jsonl"
@@ -74,8 +78,18 @@ await hooks["tool.execute.before"](input, output)
 await new Promise((resolve) => setTimeout(resolve, 15))
 await hooks["tool.execute.after"](input, {})
 '@ | Set-Content -Encoding UTF8 $smokeMjs
-    & $node $smokeMjs $pluginMjs $hookLog
-    if ($LASTEXITCODE -ne 0) { throw "Telemetry Node smoke failed with exit code $LASTEXITCODE" }
+    $nodeStdout = Join-Path $temp "node.stdout"
+    $nodeStderr = Join-Path $temp "node.stderr"
+    $nodeProcess = Start-Process -FilePath $node `
+        -ArgumentList @($smokeMjs, $pluginMjs, $hookLog) `
+        -Wait -PassThru `
+        -RedirectStandardOutput $nodeStdout `
+        -RedirectStandardError $nodeStderr
+    if ($nodeProcess.ExitCode -ne 0) {
+        $detail = (Get-Content -Raw -Path $nodeStderr -ErrorAction SilentlyContinue).Trim()
+        throw "Telemetry Node smoke failed with exit code $($nodeProcess.ExitCode): $detail"
+    }
+    if (-not (Test-Path -LiteralPath $hookLog)) { throw "Telemetry Node smoke produced no hook log." }
     $hookRow = (Get-Content -LiteralPath $hookLog | Select-Object -First 1) | ConvertFrom-Json
     if ($hookRow.kind -ne "verify") { throw "Telemetry hook failed to classify verification" }
     if ($hookRow.measured -ne $true -or $hookRow.duration_ms -lt 0) { throw "Telemetry hook did not emit measured timing" }
