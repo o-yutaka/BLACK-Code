@@ -58,12 +58,21 @@ $launcher = Join-Path $RuntimeRoot "black-code.ps1"
 Assert-Contains $launcher @(
     'Qwen3.8-27B-Uncensored-IQ2_M.gguf',
     'Qwen3.8-27B Uncensored IQ2_M',
+    'Get-BlackCodeTrackedFileCount',
+    '$trackedFileCount -le 150',
+    '$Context = 8192',
+    '$trackedFileCount -le 800',
+    '$Context = 12288',
+    '$Context = 16384',
+    '$OutputLimit = 4096',
+    '$OutputLimit = 6144',
+    '$OutputLimit = 8192',
     '"--spec-type", "draft-mtp"',
     '"--spec-draft-n-max", "2"',
-    '$Context = 16384',
     '"--fit-ctx", "$Context"',
     'IQ2_M 10.6 GB speed/memory profile',
     'MTP max 2 ALWAYS ON',
+    'explicit split OFF',
     'New-BlackCodeExecutionProfile',
     'Write-BlackCodeSessionEvidence'
 )
@@ -71,7 +80,9 @@ Assert-NotContains $launcher @(
     '$ModelFile = "Qwen3.8-27B-Uncensored-IQ4_XS.gguf"',
     '"--spec-type", "draft-mtp,ngram-mod"',
     '"--spec-ngram-mod-n-match"',
-    '"--cache-reuse"'
+    '"--cache-reuse"',
+    '"--tensor-split"',
+    '"-ts"'
 )
 
 $fabric = Join-Path $RuntimeRoot "execution-fabric.ps1"
@@ -85,6 +96,16 @@ Assert-Contains $fabric @(
     'prompt.cache-reuse-256',
     'verification_status = "UNVERIFIED"',
     'canonical_hash'
+)
+
+$instructions = Join-Path $RuntimeRoot "black-code-execution.md"
+Assert-Contains $instructions @(
+    'FIRST PASS BATCH',
+    'DELTA CONTEXT',
+    'PREFETCH + BATCH',
+    'AFFECTED VERIFY',
+    'MINIMIZE MODEL CALLS',
+    'avoid progress chatter'
 )
 
 $setup = Join-Path $RuntimeRoot "setup.ps1"
@@ -110,4 +131,4 @@ Assert-Contains $doctor @(
 )
 Assert-NotContains $doctor @('Qwen3.8-27B-Uncensored-IQ4_XS.gguf')
 
-Write-Host "BLACK CODE IQ2_M FINAL SPEED PROFILE STATIC VERIFY: PASS" -ForegroundColor Green
+Write-Host "BLACK CODE SPEED V2 STATIC VERIFY: PASS" -ForegroundColor Green
