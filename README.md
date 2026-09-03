@@ -6,54 +6,50 @@ Self-evolving autonomous system with:
 - Failure avoidance
 - Score optimization loop
 
-## Local coding runtime — Qwen3.8-27B Uncensored
+## Local coding runtime — Qwen3.8-27B Uncensored IQ2_M
 
-BLACK Code now has a Windows local coding path built around:
+BLACK Code uses a Windows local coding path built around:
 
-- **Qwen3.8-27B-Uncensored IQ4_XS** (~15.3 GB)
+- **Qwen3.8-27B-Uncensored IQ2_M** (published size 10.6 GB)
 - llama.cpp CUDA
-- automatic VRAM fitting with system-RAM spillover
+- automatic VRAM fitting
 - OpenCode as the coding-agent interface
-- autonomous file creation/editing and project shell commands
+- autonomous project-local editing and shell commands
 - BLACK-derived execution optimization without importing or modifying BLACK itself
 
-The model and runtime binaries are stored outside Git under `%LOCALAPPDATA%\BLACK-Code\runtime`.
+The canonical IQ2_M file SHA-256 is `28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187`. Model/runtime binaries live outside Git under `%LOCALAPPDATA%\BLACK-Code\runtime`.
 
 ### First run
-
-From the BLACK-Code repository on Windows:
 
 ```bat
 BLACK-CODE.cmd
 ```
 
-The first run automatically bootstraps the local runtime, downloads and SHA-256 verifies the GGUF, starts llama.cpp, verifies the local API, and launches OpenCode.
-
-After bootstrap, the user command `black-code` is installed. Open a terminal in any repository you want BLACK Code to work on and run:
+After bootstrap, open any repository and run:
 
 ```bat
 black-code
 ```
 
-Inside that repository, OpenCode is configured to read, create, edit, patch and delete project files through its tools/shell, run build/test/lint/install commands, and iterate without asking for approval on every project-local operation. Access outside the opened repository remains approval-gated.
+The current speed-first profile for RTX 3060 12 GB-class hardware uses 16,384 context, 1,024 MiB fit headroom, MTP always on with draft max 2, one parallel slot, no `ngram-mod`, no forced `cache-reuse`, and `enable_thinking=false`.
+
+The previous IQ4_XS runtime is superseded; BLACK Code does not keep it as a selectable test profile, and setup removes the old local IQ4_XS weight after IQ2_M verifies successfully.
 
 ### BLACK Execution Fabric
 
-BLACK Code copies the **design pattern** from BLACK's atomization/recomposition/learning path into its own local runtime only:
+BLACK Code copies the design pattern from BLACK's atomization/recomposition/learning path into BLACK Code only:
 
 ```text
 ATOMIZE -> DEDUPE -> REUSE -> PREFETCH/BATCH -> RECOMPOSE -> VERIFY -> RECORD
 ```
 
-The runtime combines **MTP max 4 + ngram-mod + prompt prefix reuse**, injects execution rules into OpenCode to reduce repeated reads/searches and tiny model/tool alternations, and records a canonical profile hash plus session measurements for later comparison. A clean process exit remains `UNVERIFIED` until real task verification exists.
-
-For the target 10–12 GB VRAM / 32 GB RAM class machine, the default context is 24,576 tokens and llama.cpp dynamically fits the model into available VRAM while keeping headroom for Windows.
+The agent avoids duplicate reads/searches, reuses unchanged observations, batches independent work, runs targeted verification before broad verification, and records canonical session evidence. A clean process exit remains `UNVERIFIED` until task-level verification exists.
 
 See [`local-runtime/README.md`](local-runtime/README.md) for runtime details and diagnostics.
 
 ## BLACK Sentinel — Codex Pet
 
-`codex-pet/` contains a complete Codex V2 companion package designed for BLACK Code.
+`codex-pet/` contains the BLACK Code Codex V2 companion package.
 
 - Transparent PNG atlas: **1536 × 2288**
 - Grid: **8 × 11 / 88 frames**
@@ -61,22 +57,4 @@ See [`local-runtime/README.md`](local-runtime/README.md) for runtime details and
 - Safe Windows and macOS/Linux installers with SHA-256 verification
 - Deterministic generator and GitHub Actions validation
 
-### Windows
-
-```powershell
-cd codex-pet
-Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1
-```
-
-### macOS / Linux
-
-```bash
-cd codex-pet
-chmod +x install.sh
-./install.sh
-```
-
-Restart Codex and select **BLACK Sentinel** from custom pets.
-
-See [`codex-pet/README.md`](codex-pet/README.md) for the design contract and validation steps.
+See [`codex-pet/README.md`](codex-pet/README.md) for details.
