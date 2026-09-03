@@ -228,10 +228,11 @@ $state = [ordered]@{
     model_size_gib = $modelSize
     llama_server = $ServerExe
     gpu = ($gpuInfo -join "; ")
-    execution_fabric = "black-execution-fabric-v1"
-    speculative = "draft-mtp,ngram-mod"
+    execution_fabric = "black-execution-fabric-measured-fast-v1"
+    speculative = "draft-mtp"
     mtp_draft_max = 4
-    cache_reuse = 256
+    ngram_mod = $false
+    forced_cache_reuse = $false
 }
 $state | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 (Join-Path $RuntimeDir "state.json")
 
