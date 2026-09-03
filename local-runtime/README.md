@@ -66,12 +66,12 @@ MTP is permanently enabled for the Qwen3.8 local runtime. Every `black-code` ser
 
 ```text
 --spec-type draft-mtp
---spec-draft-n-max 2
+--spec-draft-n-max 4
 --spec-draft-n-min 0
 --spec-draft-p-min 0.0
 ```
 
-The two-token draft window is the default for the RTX 3060 12 GB target so speculative decoding stays enabled while limiting extra draft/KV memory pressure. There is no normal BLACK Code fallback that silently disables MTP.
+The four-token draft window is the default. There is no normal BLACK Code fallback that silently disables MTP.
 
 ## Diagnostics
 
