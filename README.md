@@ -10,7 +10,7 @@ Self-evolving autonomous system with:
 
 BLACK Code now has a Windows local coding path built around:
 
-- **Qwen3.8-27B-Uncensored IQ4_XS** (~15.3 GB)
+- **Qwen3.8-27B-Uncensored IQ2_M** (~10.6 GB)
 - llama.cpp CUDA
 - automatic VRAM fitting with system-RAM spillover
 - OpenCode as the coding-agent interface
@@ -45,9 +45,9 @@ BLACK Code copies the **design pattern** from BLACK's atomization/recomposition/
 ATOMIZE -> DEDUPE -> REUSE -> PREFETCH/BATCH -> RECOMPOSE -> VERIFY -> RECORD
 ```
 
-The runtime combines **MTP max 4 + ngram-mod + prompt prefix reuse**, injects execution rules into OpenCode to reduce repeated reads/searches and tiny model/tool alternations, and records a canonical profile hash plus session measurements for later comparison. A clean process exit remains `UNVERIFIED` until real task verification exists.
+The speed-first runtime uses **IQ2_M + fused MTP max 2**. `ngram-mod` and forced `cache-reuse` stay disabled because the combined agentic profile regressed measured end-to-end time. The Execution Fabric still reduces duplicate reads/searches, batches independent work, reuses unchanged observations, and records a canonical profile hash plus session measurements. A clean process exit remains `UNVERIFIED` until real task verification exists.
 
-For the target 10–12 GB VRAM / 32 GB RAM class machine, the default context is 24,576 tokens and llama.cpp dynamically fits the model into available VRAM while keeping headroom for Windows.
+For the target 12 GB VRAM / 32 GB RAM class machine, the default context is 24,576 tokens and llama.cpp dynamically fits the 10.6 GB model into available VRAM while keeping headroom for Windows.
 
 See [`local-runtime/README.md`](local-runtime/README.md) for runtime details and diagnostics.
 

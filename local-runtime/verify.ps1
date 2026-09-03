@@ -55,17 +55,21 @@ foreach ($file in $files) {
 
 $launcher = Join-Path $RuntimeRoot "black-code.ps1"
 Assert-Contains $launcher @(
+    'Qwen3.8-27B-Uncensored-IQ2_M.gguf',
+    'Qwen3.8-27B Uncensored IQ2_M',
     '"--spec-type", "draft-mtp"',
     '--spec-draft-n-max',
-    '"4"',
+    '"2"',
     'black-code-execution.md',
     'New-BlackCodeExecutionProfile',
     'Write-BlackCodeSessionEvidence',
-    'MTP max 4 ALWAYS ON (measured-fast)',
+    'IQ2_M 10.6 GB speed/memory profile',
+    'MTP max 2 ALWAYS ON',
     'N-gram:    OFF by default',
     'forced cache-reuse OFF'
 )
 Assert-NotContains $launcher @(
+    'Qwen3.8-27B-Uncensored-IQ4_XS.gguf',
     '"--spec-type", "draft-mtp,ngram-mod"',
     '"--spec-ngram-mod-n-match"',
     '"--cache-reuse"'
@@ -73,12 +77,14 @@ Assert-NotContains $launcher @(
 
 $fabric = Join-Path $RuntimeRoot "execution-fabric.ps1"
 Assert-Contains $fabric @(
-    'black-execution-fabric-measured-fast-v1',
+    'black-execution-fabric-iq2m-speed-v1',
     'task.atomize',
     'work.dedupe-overlap',
     'context.reuse-session',
     'tool.prefetch-batch',
-    'decode.mtp4',
+    'decode.iq2m-mtp2',
+    'quantization = "IQ2_M"',
+    'mtp_draft_max = 2',
     'rejected_atoms',
     'decode.ngram-mod',
     'prompt.cache-reuse-256',
@@ -101,9 +107,13 @@ Assert-Contains $instructions @(
 
 $setup = Join-Path $RuntimeRoot "setup.ps1"
 Assert-Contains $setup @(
+    'Qwen3.8-27B-Uncensored-IQ2_M.gguf',
+    '28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187',
+    '$ModelMinimumBytes = 10000000000',
     'execution-fabric.ps1',
     'black-code-execution.md',
-    'mtp_draft_max = 4'
+    'quantization = "IQ2_M"',
+    'mtp_draft_max = 2'
 )
 
-Write-Host "BLACK CODE MEASURED-FAST EXECUTION FABRIC STATIC VERIFY: PASS" -ForegroundColor Green
+Write-Host "BLACK CODE IQ2_M SPEED PROFILE STATIC VERIFY: PASS" -ForegroundColor Green
