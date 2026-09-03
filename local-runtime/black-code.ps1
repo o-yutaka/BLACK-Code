@@ -179,10 +179,11 @@ $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $stdout = Join-Path $LogDir "llama-$timestamp.out.log"
 $stderr = Join-Path $LogDir "llama-$timestamp.err.log"
 
-# BLACK Execution Fabric profile:
-# - Qwen3.8 embedded MTP is always enabled with a four-token draft window.
-# - ngram-mod adds a lightweight second speculative path for repeated code/text.
-# - cache-reuse keeps recurring prompt prefixes hot inside the long-lived server.
+# Measured-fast decoding profile:
+# - Keep Qwen3.8 embedded MTP always enabled with a four-token draft window.
+# - Do not stack ngram-mod: the combined agentic profile regressed measured end-to-end time.
+# - Do not force cache-reuse: repeated-request cache behavior can regress this workload.
+# BLACK Execution Fabric remains active at the agent/tool layer.
 $serverArgs = @(
     "--model", $ModelPath,
     "--alias", $ModelAlias,
@@ -196,14 +197,10 @@ $serverArgs = @(
     "--cache-type-k", "q8_0",
     "--cache-type-v", "q8_0",
     "--flash-attn", "auto",
-    "--spec-type", "draft-mtp,ngram-mod",
+    "--spec-type", "draft-mtp",
     "--spec-draft-n-max", "4",
     "--spec-draft-n-min", "0",
     "--spec-draft-p-min", "0.0",
-    "--spec-ngram-mod-n-match", "24",
-    "--spec-ngram-mod-n-min", "24",
-    "--spec-ngram-mod-n-max", "64",
-    "--cache-reuse", "256",
     "--jinja"
 )
 
@@ -216,8 +213,9 @@ Write-Host "RAM:       $ramGiB GiB"
 Write-Host "Model:     $ModelFile"
 Write-Host "Context:   $Context"
 Write-Host ("VRAM fit:  automatic; {0} MiB target headroom" -f $fitTarget)
-Write-Host "Spec:      MTP max 4 + ngram-mod ALWAYS ON" -ForegroundColor Green
-Write-Host "Prefix:    cache-reuse 256"
+Write-Host "Spec:      MTP max 4 ALWAYS ON (measured-fast)" -ForegroundColor Green
+Write-Host "N-gram:    OFF by default (measured regression)"
+Write-Host "Cache:     llama default; forced cache-reuse OFF"
 Write-Host "Fabric:    $($profileEnvelope.profile.profile_name) [$($profileEnvelope.canonical_hash.Substring(0, 12))]" -ForegroundColor Green
 Write-Host "Files:     autonomous inside this project"
 Write-Host "Outside:   approval required"
@@ -257,7 +255,7 @@ try {
         throw "llama-server is healthy but /v1/models returned no model."
     }
 
-    Write-Host "Local model server VERIFIED with BLACK Execution Fabric acceleration." -ForegroundColor Green
+    Write-Host "Local model server VERIFIED with BLACK Execution Fabric + measured-fast MTP." -ForegroundColor Green
     Write-Host "Starting OpenCode with autonomous project editing..." -ForegroundColor Green
     Write-Host ""
 
