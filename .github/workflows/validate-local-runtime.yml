@@ -1,0 +1,60 @@
+name: validate-local-runtime
+
+on:
+  pull_request:
+    paths:
+      - 'local-runtime/**'
+      - '.github/workflows/validate-local-runtime.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'local-runtime/**'
+      - '.github/workflows/validate-local-runtime.yml'
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell and verify acceleration contract
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(
+            'local-runtime/black-code.ps1',
+            'local-runtime/setup.ps1',
+            'local-runtime/execution-fabric.ps1'
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file), [ref]$tokens, [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "$file: $($_.Message)" }
+              exit 1
+            }
+          }
+
+          $launcher = Get-Content 'local-runtime/black-code.ps1' -Raw
+          $required = @(
+            'draft-mtp,ngram-mod',
+            '--spec-draft-n-max',
+            '--spec-ngram-mod-n-match',
+            '--cache-reuse',
+            'black-code-execution.md',
+            'Write-BlackCodeSessionEvidence'
+          )
+          foreach ($needle in $required) {
+            if (-not $launcher.Contains($needle)) {
+              throw "Missing local-runtime contract: $needle"
+            }
+          }
+
+          $instructions = Get-Content 'local-runtime/black-code-execution.md' -Raw
+          foreach ($needle in @('ATOMIZE', 'DEDUPE', 'REUSE', 'RECOMPOSE', 'TARGET VERIFY', 'EVIDENCE')) {
+            if (-not $instructions.Contains($needle)) {
+              throw "Missing execution-fabric instruction: $needle"
+            }
+          }
