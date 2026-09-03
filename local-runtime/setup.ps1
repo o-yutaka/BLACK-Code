@@ -66,9 +66,26 @@ function Download-File([string]$Url, [string]$Destination) {
     New-Item -ItemType Directory -Force -Path (Split-Path $Destination) | Out-Null
     Write-Host "Downloading: $Url"
     Write-Host "To:          $Destination"
-    & curl.exe -L --fail --retry 8 --retry-all-errors --retry-delay 2 -C - -o $partial $Url
+    $curlArgs = @(
+        "-L",
+        "--fail",
+        "--retry", "8",
+        "--retry-all-errors",
+        "--retry-delay", "2",
+        "-o", $partial,
+        $Url
+    )
+    # Windows curl rejects a resume request when the partial file does not
+    # exist. Only ask for continuation after an actual interrupted download.
+    if (Test-Path -LiteralPath $partial) {
+        $curlArgs = @("-C", "-") + $curlArgs
+    }
+    & curl.exe @curlArgs
     if ($LASTEXITCODE -ne 0) {
         throw "curl failed with exit code $LASTEXITCODE"
+    }
+    if (-not (Test-Path -LiteralPath $partial)) {
+        throw "curl completed without creating the partial download: $partial"
     }
     Move-Item -Force $partial $Destination
 }
