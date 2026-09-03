@@ -44,8 +44,8 @@ function New-BlackCodeExecutionProfile(
     [int]$FitTargetMiB
 ) {
     $body = [ordered]@{
-        schema_version = "1.0"
-        profile_name = "black-execution-fabric-v1"
+        schema_version = "1.1"
+        profile_name = "black-execution-fabric-measured-fast-v1"
         design_source = "BLACK atomize/overlap/recompose/utility/learning-policy pattern; copied as design only"
         authority = [ordered]@{
             may_edit_project = $true
@@ -58,20 +58,27 @@ function New-BlackCodeExecutionProfile(
             "context.reuse-session",
             "tool.prefetch-batch",
             "decode.mtp4",
-            "decode.ngram-mod",
-            "prompt.cache-reuse-256",
             "verify.targeted-then-broad",
             "experience.session-evidence"
         )
+        rejected_atoms = @(
+            [ordered]@{
+                atom = "decode.ngram-mod"
+                reason = "measured_agentic_regression"
+                default_enabled = $false
+            },
+            [ordered]@{
+                atom = "prompt.cache-reuse-256"
+                reason = "measured_agentic_regression_or_unproven_benefit"
+                default_enabled = $false
+            }
+        )
         inference = [ordered]@{
-            speculative_types = @("draft-mtp", "ngram-mod")
+            speculative_types = @("draft-mtp")
             mtp_draft_max = 4
             mtp_draft_min = 0
             mtp_probability_min = 0.0
-            ngram_match = 24
-            ngram_min = 24
-            ngram_max = 64
-            cache_reuse = 256
+            forced_cache_reuse = $false
             context = $Context
             fit_target_mib = $FitTargetMiB
         }
@@ -83,6 +90,7 @@ function New-BlackCodeExecutionProfile(
             parallelize_only_independent_work = $true
             verify_smallest_relevant_scope_first = $true
             broad_verify_after_patch_stabilizes = $true
+            reject_regressing_atoms = $true
         }
     }
 
