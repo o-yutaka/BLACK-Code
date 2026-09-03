@@ -1,5 +1,6 @@
 param(
-    [switch]$Force
+    [switch]$Force,
+    [switch]$ForceLlama
 )
 
 Set-StrictMode -Version Latest
@@ -130,7 +131,7 @@ Require-Command "opencode" "OpenCode was not found after installation."
 
 Write-Step "Installing llama.cpp Windows CUDA build"
 $ServerExe = Join-Path $LlamaDir "llama-server.exe"
-if ($Force -or -not (Test-Path $ServerExe)) {
+if ($Force -or $ForceLlama -or -not (Test-Path $ServerExe)) {
     $releases = Invoke-RestMethod -Headers @{ "User-Agent" = "BLACK-Code-Setup" } -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20"
     $picked = $null
 
@@ -151,8 +152,8 @@ if ($Force -or -not (Test-Path $ServerExe)) {
     $mainZip = Join-Path $DownloadDir $picked.main.name
     $cudaZip = Join-Path $DownloadDir $picked.cudart.name
 
-    if ($Force -or -not (Test-Path $mainZip)) { Download-File $picked.main.browser_download_url $mainZip }
-    if ($Force -or -not (Test-Path $cudaZip)) { Download-File $picked.cudart.browser_download_url $cudaZip }
+    if ($Force -or $ForceLlama -or -not (Test-Path $mainZip)) { Download-File $picked.main.browser_download_url $mainZip }
+    if ($Force -or $ForceLlama -or -not (Test-Path $cudaZip)) { Download-File $picked.cudart.browser_download_url $cudaZip }
 
     $stage = Join-Path $RuntimeDir "llama-stage"
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
@@ -192,10 +193,18 @@ $modelSize = [Math]::Round((Get-Item $ModelPath).Length / 1GB, 2)
 Write-Host "Model verified: $ModelFile ($modelSize GiB)"
 
 Write-Step "Installing BLACK Code launcher"
-Copy-Item -Force (Join-Path $PSScriptRoot "black-code.ps1") (Join-Path $LauncherDir "black-code.ps1")
-Copy-Item -Force $PSCommandPath (Join-Path $LauncherDir "setup.ps1")
-if (Test-Path (Join-Path $PSScriptRoot "doctor.ps1")) {
-    Copy-Item -Force (Join-Path $PSScriptRoot "doctor.ps1") (Join-Path $LauncherDir "doctor.ps1")
+$launcherFiles = @(
+    "black-code.ps1",
+    "setup.ps1",
+    "doctor.ps1",
+    "execution-fabric.ps1",
+    "black-code-execution.md"
+)
+foreach ($name in $launcherFiles) {
+    $source = Join-Path $PSScriptRoot $name
+    if (Test-Path $source) {
+        Copy-Item -Force $source (Join-Path $LauncherDir $name)
+    }
 }
 
 $Shim = Join-Path $BinDir "black-code.cmd"
@@ -219,6 +228,10 @@ $state = [ordered]@{
     model_size_gib = $modelSize
     llama_server = $ServerExe
     gpu = ($gpuInfo -join "; ")
+    execution_fabric = "black-execution-fabric-v1"
+    speculative = "draft-mtp,ngram-mod"
+    mtp_draft_max = 4
+    cache_reuse = 256
 }
 $state | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 (Join-Path $RuntimeDir "state.json")
 
