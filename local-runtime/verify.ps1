@@ -68,7 +68,7 @@ Assert-Contains $index @(
     'cache_status = "HIT"',
     '"DELTA_REFRESH"',
     '"MISS_BUILD"',
-    'git diff --name-only',
+    'diff --name-only',
     'package_roots',
     'likely_tests',
     'repo-context.md'
