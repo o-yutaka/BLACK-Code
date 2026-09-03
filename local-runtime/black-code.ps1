@@ -88,6 +88,19 @@ function Resolve-FabricFile([string]$Name) {
     throw "$Name was not found. Run BLACK Code setup from the latest repository checkout."
 }
 
+function Get-BlackCodeTrackedFileCount([string]$ProjectRoot) {
+    $git = Get-Command "git.exe" -ErrorAction SilentlyContinue
+    if (-not $git) { $git = Get-Command "git" -ErrorAction SilentlyContinue }
+    if (-not $git) { return $null }
+
+    try {
+        $files = @(& $git.Source -C $ProjectRoot ls-files 2>$null)
+        if ($LASTEXITCODE -eq 0) { return $files.Count }
+    }
+    catch {}
+    return $null
+}
+
 Ensure-Installed
 New-Item -ItemType Directory -Force -Path $LogDir, $FabricEvidenceDir | Out-Null
 
@@ -105,29 +118,53 @@ $freeVram = [int]$gpuParts[2]
 
 $ramBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
 $ramGiB = [Math]::Round($ramBytes / 1GB, 1)
+$projectRoot = (Get-Location).Path
+$trackedFileCount = Get-BlackCodeTrackedFileCount $projectRoot
+$contextReason = "explicit"
+
 if ($Context -eq 0) {
     if ($totalVram -le 12288) {
-        $Context = 16384
+        if ($null -ne $trackedFileCount -and $trackedFileCount -le 150) {
+            $Context = 8192
+            $contextReason = "auto-small-repo"
+        }
+        elseif ($null -ne $trackedFileCount -and $trackedFileCount -le 800) {
+            $Context = 12288
+            $contextReason = "auto-medium-repo"
+        }
+        else {
+            $Context = 16384
+            $contextReason = "auto-large-repo"
+        }
     }
     elseif ($ramGiB -lt 40) {
         $Context = 24576
+        $contextReason = "auto-ram"
     }
     else {
         $Context = 32768
+        $contextReason = "auto-ram"
     }
 }
 
-if ($totalVram -le 12288) {
-    $fitTarget = 1024
+if ($Context -le 8192) {
+    $OutputLimit = 4096
 }
-elseif ($totalVram -le 16384) {
+elseif ($Context -le 12288) {
+    $OutputLimit = 6144
+}
+else {
+    $OutputLimit = 8192
+}
+
+if ($totalVram -le 16384) {
     $fitTarget = 1024
 }
 else {
     $fitTarget = 768
 }
 
-$projectIdentity = Get-BlackCodeProjectIdentity (Get-Location).Path
+$projectIdentity = Get-BlackCodeProjectIdentity $projectRoot
 $profileEnvelope = New-BlackCodeExecutionProfile -Context $Context -FitTargetMiB $fitTarget
 
 $Port = Find-FreePort 18080 18099
@@ -174,7 +211,7 @@ $config = [ordered]@{
                     }
                     limit = [ordered]@{
                         context = $Context
-                        output = 8192
+                        output = $OutputLimit
                     }
                 }
             }
@@ -188,10 +225,10 @@ $stdout = Join-Path $LogDir "llama-$timestamp.out.log"
 $stderr = Join-Path $LogDir "llama-$timestamp.err.log"
 
 # IQ2_M speed profile:
-# - 10.6 GB 27B quant to keep substantially more of the model on the 12 GB RTX 3060.
-# - Fused Qwen3.8 MTP remains enabled. Published IQ2_M code measurements favor n_max=2
-#   among tested widths, so BLACK Code uses MTP2 for the speed-first default.
-# - ngram-mod and forced cache-reuse remain disabled after agentic regressions.
+# - 10.6 GB quant keeps substantially more of the 27B model on a 12 GB RTX 3060.
+# - Auto context avoids paying 16K KV/prefill cost for small repositories.
+# - Fused Qwen3.8 MTP stays on at n_max=2, the publisher's fastest tested IQ2_M code width.
+# - ngram-mod, forced cache-reuse, and explicit tensor split stay disabled.
 $serverArgs = @(
     "--model", $ModelPath,
     "--alias", $ModelAlias,
@@ -214,17 +251,20 @@ $serverArgs = @(
 
 Write-Host ""
 Write-Host "BLACK CODE - LOCAL QWEN 3.8" -ForegroundColor Magenta
-Write-Host "Project:   $(Get-Location)"
+Write-Host "Project:   $projectRoot"
 Write-Host "GPU:       $gpuName"
 Write-Host "VRAM:      $freeVram / $totalVram MiB free"
 Write-Host "RAM:       $ramGiB GiB"
 Write-Host "Model:     $ModelFile"
-Write-Host "Context:   $Context"
+Write-Host "Files:     $trackedFileCount tracked"
+Write-Host "Context:   $Context ($contextReason)"
+Write-Host "Output:    $OutputLimit max tokens"
 Write-Host ("VRAM fit:  automatic; {0} MiB target headroom" -f $fitTarget)
 Write-Host "Quant:     IQ2_M 10.6 GB speed/memory profile" -ForegroundColor Green
 Write-Host "Spec:      MTP max 2 ALWAYS ON" -ForegroundColor Green
-Write-Host "N-gram:    OFF by default (measured regression)"
+Write-Host "N-gram:    OFF"
 Write-Host "Cache:     llama default; forced cache-reuse OFF"
+Write-Host "Tensor:    automatic; explicit split OFF"
 Write-Host "Fabric:    $($profileEnvelope.profile.profile_name) [$($profileEnvelope.canonical_hash.Substring(0, 12))]" -ForegroundColor Green
 Write-Host "Files:     autonomous inside this project"
 Write-Host "Outside:   approval required"
