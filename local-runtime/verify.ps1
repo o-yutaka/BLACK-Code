@@ -20,6 +20,7 @@ function Assert-NotContains([string]$Path, [string[]]$Needles) {
 $files = @(
     (Join-Path $RuntimeRoot "black-code.ps1"),
     (Join-Path $RuntimeRoot "setup.ps1"),
+    (Join-Path $RuntimeRoot "doctor.ps1"),
     (Join-Path $RuntimeRoot "execution-fabric.ps1"),
     (Join-Path $RuntimeRoot "verify.ps1")
 )
@@ -42,14 +43,15 @@ $launcher = Join-Path $RuntimeRoot "black-code.ps1"
 Assert-Contains $launcher @(
     'Qwen3.8-27B-Uncensored-IQ2_M.gguf',
     '"--spec-type", "draft-mtp"',
-    '--spec-draft-n-max',
+    '"--spec-draft-n-max", "2"',
     'MTP max 2',
+    '16384',
     'black-code-execution.md',
     'New-BlackCodeExecutionProfile',
     'Write-BlackCodeSessionEvidence'
 )
 Assert-NotContains $launcher @(
-    'Qwen3.8-27B-Uncensored-IQ4_XS.gguf',
+    '$ModelFile = "Qwen3.8-27B-Uncensored-IQ4_XS.gguf"',
     '"--spec-type", "draft-mtp,ngram-mod"',
     '"--spec-ngram-mod-n-match"',
     '"--cache-reuse"'
@@ -58,25 +60,37 @@ Assert-NotContains $launcher @(
 $fabric = Join-Path $RuntimeRoot "execution-fabric.ps1"
 Assert-Contains $fabric @(
     'black-execution-fabric-iq2m-fast-v1',
+    'quant = "IQ2_M"',
     'decode.mtp2',
     'task.atomize',
     'work.dedupe-overlap',
     'context.reuse-session',
     'tool.prefetch-batch',
     'verify.targeted-then-broad',
+    'mtp_draft_max = 2',
     'verification_status = "UNVERIFIED"',
     'canonical_hash'
 )
 
 $setup = Join-Path $RuntimeRoot "setup.ps1"
 Assert-Contains $setup @(
-    'Qwen3.8-27B-Uncensored-IQ2_M.gguf',
+    '$ModelFile = "Qwen3.8-27B-Uncensored-IQ2_M.gguf"',
     '28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187',
-    'mtp_draft_max = 2'
+    'mtp_draft_max = 2',
+    'default_context = 16384',
+    'Removed superseded IQ4_XS model file.'
 )
 Assert-NotContains $setup @(
     '$ModelFile = "Qwen3.8-27B-Uncensored-IQ4_XS.gguf"',
     'speculative = "draft-mtp,ngram-mod"'
 )
+
+$doctor = Join-Path $RuntimeRoot "doctor.ps1"
+Assert-Contains $doctor @(
+    'Qwen3.8-27B-Uncensored-IQ2_M.gguf',
+    '28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187',
+    'IQ2_M HASH VERIFIED'
+)
+Assert-NotContains $doctor @('Qwen3.8-27B-Uncensored-IQ4_XS.gguf')
 
 Write-Host "BLACK CODE IQ2_M FAST PROFILE STATIC VERIFY: PASS" -ForegroundColor Green
