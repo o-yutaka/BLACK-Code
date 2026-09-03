@@ -95,8 +95,8 @@ function New-BlackCodeExecutionProfile(
 
 function Write-BlackCodeSessionEvidence(
     [string]$EvidenceDir,
-    [hashtable]$ProfileEnvelope,
-    [hashtable]$ProjectIdentity,
+    [System.Collections.IDictionary]$ProfileEnvelope,
+    [System.Collections.IDictionary]$ProjectIdentity,
     [datetime]$StartedAt,
     [datetime]$CompletedAt,
     [int]$ExitCode,
@@ -130,6 +130,6 @@ function Write-BlackCodeSessionEvidence(
         }
     }
     $recordHashInput = $record | ConvertTo-Json -Depth 12 -Compress
-    $record.canonical_hash = Get-BlackCodeSha256 $recordHashInput
+    $record["canonical_hash"] = Get-BlackCodeSha256 $recordHashInput
     $record | ConvertTo-Json -Depth 12 -Compress | Add-Content -Encoding UTF8 (Join-Path $EvidenceDir "sessions.jsonl")
 }
