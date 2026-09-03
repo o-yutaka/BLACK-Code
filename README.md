@@ -15,6 +15,7 @@ BLACK Code now has a Windows local coding path built around:
 - automatic VRAM fitting with system-RAM spillover
 - OpenCode as the coding-agent interface
 - autonomous file creation/editing and project shell commands
+- BLACK-derived execution optimization without importing or modifying BLACK itself
 
 The model and runtime binaries are stored outside Git under `%LOCALAPPDATA%\BLACK-Code\runtime`.
 
@@ -36,7 +37,17 @@ black-code
 
 Inside that repository, OpenCode is configured to read, create, edit, patch and delete project files through its tools/shell, run build/test/lint/install commands, and iterate without asking for approval on every project-local operation. Access outside the opened repository remains approval-gated.
 
-For the target 10 GB VRAM / 32 GB RAM class machine, the default context is 24,576 tokens and llama.cpp dynamically fits the model into available VRAM while keeping headroom for Windows.
+### BLACK Execution Fabric
+
+BLACK Code copies the **design pattern** from BLACK's atomization/recomposition/learning path into its own local runtime only:
+
+```text
+ATOMIZE -> DEDUPE -> REUSE -> PREFETCH/BATCH -> RECOMPOSE -> VERIFY -> RECORD
+```
+
+The runtime combines **MTP max 4 + ngram-mod + prompt prefix reuse**, injects execution rules into OpenCode to reduce repeated reads/searches and tiny model/tool alternations, and records a canonical profile hash plus session measurements for later comparison. A clean process exit remains `UNVERIFIED` until real task verification exists.
+
+For the target 10–12 GB VRAM / 32 GB RAM class machine, the default context is 24,576 tokens and llama.cpp dynamically fits the model into available VRAM while keeping headroom for Windows.
 
 See [`local-runtime/README.md`](local-runtime/README.md) for runtime details and diagnostics.
 
