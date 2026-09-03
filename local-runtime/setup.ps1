@@ -18,10 +18,11 @@ $DownloadDir = Join-Path $RuntimeDir "downloads"
 $LogDir = Join-Path $RuntimeDir "logs"
 
 $ModelRepo = "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
-$ModelFile = "Qwen3.8-27B-Uncensored-IQ4_XS.gguf"
-$ModelSha256 = "53adc4bbed67044d662273356bbf3a50fdec667ac21bbf18d13e5815fbccc7f5"
+$ModelFile = "Qwen3.8-27B-Uncensored-IQ2_M.gguf"
+$ModelSha256 = "28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187"
 $ModelPath = Join-Path $ModelDir $ModelFile
 $ModelUrl = "https://huggingface.co/$ModelRepo/resolve/main/${ModelFile}?download=true"
+$ModelMinimumBytes = 10000000000
 
 function Write-Step([string]$Message) {
     Write-Host ""
@@ -74,7 +75,7 @@ function Download-File([string]$Url, [string]$Destination) {
 function Test-Model([string]$Path) {
     if (-not (Test-Path $Path)) { return $false }
     $item = Get-Item $Path
-    if ($item.Length -lt 14000000000) { return $false }
+    if ($item.Length -lt $ModelMinimumBytes) { return $false }
 
     $stream = [System.IO.File]::OpenRead($Path)
     try {
@@ -177,7 +178,7 @@ if (-not (Test-Path $ServerExe)) { throw "llama-server.exe installation did not 
 & $ServerExe --version
 if ($LASTEXITCODE -ne 0) { throw "llama-server.exe exists but failed to run." }
 
-Write-Step "Downloading Qwen3.8-27B Uncensored IQ4_XS"
+Write-Step "Downloading Qwen3.8-27B Uncensored IQ2_M"
 if ($Force -or -not (Test-Model $ModelPath)) {
     if (Test-Path $ModelPath) {
         Move-Item -Force $ModelPath "$ModelPath.invalid"
@@ -228,9 +229,10 @@ $state = [ordered]@{
     model_size_gib = $modelSize
     llama_server = $ServerExe
     gpu = ($gpuInfo -join "; ")
-    execution_fabric = "black-execution-fabric-measured-fast-v1"
+    execution_fabric = "black-execution-fabric-iq2m-speed-v1"
+    quantization = "IQ2_M"
     speculative = "draft-mtp"
-    mtp_draft_max = 4
+    mtp_draft_max = 2
     ngram_mod = $false
     forced_cache_reuse = $false
 }
