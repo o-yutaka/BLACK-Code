@@ -19,3 +19,37 @@ jobs:
       - name: Verify BLACK Code Execution Fabric
         shell: powershell
         run: ./local-runtime/verify.ps1
+      - name: Parse model distribution scripts
+        shell: powershell
+        run: |
+          $files = @(
+            './local-runtime/prepare-parent-7.27.ps1',
+            './local-runtime/inspect-parent-7.27.ps1',
+            './local-runtime/setup-resumable-7.27.ps1',
+            './local-runtime/install-prebuilt-7.27.ps1',
+            './local-runtime/publish-prebuilt-7.27.ps1'
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors)
+            if (@($errors).Count -gt 0) {
+              throw "PowerShell parse failed: $file :: $($errors[0].Message)"
+            }
+          }
+      - name: Smoke parent durable state
+        shell: powershell
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP 'black-parent-state-smoke'
+          ./local-runtime/prepare-parent-7.27.ps1 -WorkDir $work -StatusOnly | Out-Null
+          $statePath = Join-Path $work 'parent-download-state.json'
+          if (-not (Test-Path -LiteralPath $statePath)) { throw 'parent state file missing' }
+          $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
+          if ($state.schema_version -ne '1.0') { throw 'parent state schema mismatch' }
+          if ($state.status -ne 'NO_PRIOR_STATE') { throw "unexpected parent state: $($state.status)" }
+          if ($state.repo -ne 'JonathanColetti/Qwen3.8-27B-Uncensored') { throw 'parent state repo mismatch' }
+          if ($state.revision -ne '5bb7aa90f0efef548e87005b1fb7658e522b6b7f') { throw 'parent state revision mismatch' }
+          if (-not $state.windows_host) { throw 'parent state did not record Windows host' }
+          $inspection = ./local-runtime/inspect-parent-7.27.ps1 -WorkDir $work | ConvertFrom-Json
+          if ($inspection.verdict -ne 'INCOMPLETE_OR_NOT_STARTED') { throw "unexpected parent inspection verdict: $($inspection.verdict)" }
+          if ($inspection.recorded_hf_pid_alive_and_matching) { throw 'status smoke incorrectly found an active hf process' }
