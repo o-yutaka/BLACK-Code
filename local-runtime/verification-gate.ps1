@@ -143,8 +143,13 @@ if ($gitRepo) {
 
 $sourceRepo = $false
 if ($git) {
-    $sourceInside = & $git -C $PSScriptRoot rev-parse --is-inside-work-tree 2>$null
-    $sourceRepo = ($LASTEXITCODE -eq 0) -and ([Convert]::ToString($sourceInside).Trim() -eq "true")
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $sourceInside = & $git -C $PSScriptRoot rev-parse --is-inside-work-tree 2>$null
+        $sourceRepo = ($LASTEXITCODE -eq 0) -and ([Convert]::ToString($sourceInside).Trim() -eq "true")
+    }
+    finally { $ErrorActionPreference = $previousErrorAction }
 }
 $sourceHasGitMetadata = Test-InGitWorkTree $PSScriptRoot
 if ($sourceHasGitMetadata -and -not $sourceRepo) { throw "BLACK Code runtime source worktree could not be inspected; VERIFIED is forbidden." }
