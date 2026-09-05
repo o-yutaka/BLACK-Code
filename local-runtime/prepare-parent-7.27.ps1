@@ -1,6 +1,9 @@
 param(
     [string]$WorkDir = (Join-Path $env:LOCALAPPDATA "BLACK-Code\model-build-7.27"),
     [ValidateRange(5,300)][int]$PollSeconds = 15,
+    [ValidateRange(60,7200)][int]$StallSeconds = 900,
+    [ValidateRange(0,20)][int]$MaxStallRestarts = 4,
+    [ValidateRange(1,300)][int]$RetryBackoffSeconds = 10,
     [switch]$StatusOnly
 )
 
@@ -12,13 +15,18 @@ $global:LASTEXITCODE = 0
 if ($env:OS -ne "Windows_NT") { throw "prepare-parent-7.27.ps1 must run in Windows PowerShell, not WSL/Linux." }
 
 $LockPath = Join-Path $PSScriptRoot "model-7.27.lock.json"
-if (-not (Test-Path -LiteralPath $LockPath)) { throw "model-7.27.lock.json is missing." }
+$WatchdogPath = Join-Path $PSScriptRoot "watch-hf-transfer.ps1"
+foreach ($required in @($LockPath,$WatchdogPath)) {
+    if (-not (Test-Path -LiteralPath $required)) { throw "Required parent preload input missing: $required" }
+}
 $Lock = Get-Content -Raw -LiteralPath $LockPath | ConvertFrom-Json
 $SourceDir = Join-Path $WorkDir "uncensored-parent"
 $VenvDir = Join-Path $WorkDir ".venv"
 $StatePath = Join-Path $WorkDir "parent-download-state.json"
 $StdoutPath = Join-Path $WorkDir "parent-download.stdout.log"
 $StderrPath = Join-Path $WorkDir "parent-download.stderr.log"
+$script:StallRestartsUsed = 0
+$script:LastWatchdogIdleSeconds = 0
 
 function Require-Command([string]$Name) {
     $command = Get-Command $Name -ErrorAction SilentlyContinue
@@ -46,7 +54,11 @@ function Get-SnapshotStatus([string]$Path) {
     $expected = 0
     $missing = 0
     $complete = $false
-    if (Test-Path -LiteralPath $indexPath) {
+    $indexPresent = Test-Path -LiteralPath $indexPath
+
+    # This pinned parent is a sharded safetensors model. A stale config.json plus one shard
+    # is never enough to mark the snapshot complete. The index is canonical completeness evidence.
+    if ($indexPresent) {
         try {
             $index = Get-Content -Raw -LiteralPath $indexPath | ConvertFrom-Json
             $shards = @($index.weight_map.PSObject.Properties | ForEach-Object { [string]$_.Value } | Sort-Object -Unique)
@@ -59,13 +71,11 @@ function Get-SnapshotStatus([string]$Path) {
         } catch {
             $complete = $false
         }
-    } else {
-        $single = @(Get-ChildItem -LiteralPath $Path -Filter "*.safetensors" -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 })
-        $expected = $single.Count
-        $complete = (Test-Path -LiteralPath $config) -and $single.Count -gt 0
     }
+
     return [pscustomobject]@{
         complete = $complete
+        index_present = [bool]$indexPresent
         expected_shards = $expected
         missing_or_empty_shards = $missing
     }
@@ -78,7 +88,7 @@ function Write-State([string]$Phase,[string]$Status,[object]$HfPid,[string]$Deta
     $drive = [IO.DriveInfo]::new($root)
     $parentBytes = Get-DirectoryBytes $SourceDir
     $state = [ordered]@{
-        schema_version = "1.0"
+        schema_version = "1.1"
         updated_at = (Get-Date).ToString("o")
         phase = $Phase
         status = $Status
@@ -92,11 +102,17 @@ function Write-State([string]$Phase,[string]$Status,[object]$HfPid,[string]$Deta
         parent_bytes = [int64]$parentBytes
         latest_write_utc = Get-LatestWrite $SourceDir
         snapshot_complete = [bool]$snapshot.complete
+        index_present = [bool]$snapshot.index_present
         expected_shards = [int]$snapshot.expected_shards
         missing_or_empty_shards = [int]$snapshot.missing_or_empty_shards
         free_bytes = [int64]$drive.AvailableFreeSpace
         effective_bytes = [int64]$drive.AvailableFreeSpace + [int64]$parentBytes
         required_effective_bytes = 125000000000L
+        watchdog_poll_seconds = $PollSeconds
+        watchdog_stall_seconds = $StallSeconds
+        max_stall_restarts = $MaxStallRestarts
+        stall_restarts_used = $script:StallRestartsUsed
+        watchdog_last_idle_seconds = $script:LastWatchdogIdleSeconds
         detail = $Detail
         stdout_log = $StdoutPath
         stderr_log = $StderrPath
@@ -109,7 +125,7 @@ function Write-State([string]$Phase,[string]$Status,[object]$HfPid,[string]$Deta
 function Assert-SnapshotComplete([string]$Path) {
     $snapshot = Get-SnapshotStatus $Path
     if (-not $snapshot.complete) {
-        throw "Parent snapshot incomplete: expected=$($snapshot.expected_shards) missing_or_empty=$($snapshot.missing_or_empty_shards)"
+        throw "Parent snapshot incomplete: index_present=$($snapshot.index_present) expected=$($snapshot.expected_shards) missing_or_empty=$($snapshot.missing_or_empty_shards)"
     }
 }
 
@@ -118,6 +134,32 @@ function Get-ActiveParentTransfers {
     return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
         $_.CommandLine -and $_.CommandLine -match 'hf\.exe' -and $_.CommandLine -match $repoPattern
     })
+}
+
+function Invoke-Watchdog([int]$ProcessId) {
+    $json = & $WatchdogPath `
+        -ProcessId $ProcessId `
+        -SourceDir $SourceDir `
+        -Repo ([string]$Lock.uncensored_parent.repo) `
+        -SourcePattern $SourceDir `
+        -StdoutPath $StdoutPath `
+        -StderrPath $StderrPath `
+        -PollSeconds $PollSeconds `
+        -StallSeconds $StallSeconds `
+        -StopOnStall
+    if (-not $json) { throw "HF transfer watchdog returned no verdict for PID $ProcessId" }
+    $verdict = $json | ConvertFrom-Json
+    if ($null -ne $verdict.idle_seconds) { $script:LastWatchdogIdleSeconds = [int]$verdict.idle_seconds }
+    return $verdict
+}
+
+function Rotate-TransferLogs([int]$Attempt) {
+    foreach ($path in @($StdoutPath,$StderrPath)) {
+        if (Test-Path -LiteralPath $path) {
+            $archive = "$path.attempt-$('{0:D2}' -f $Attempt).previous"
+            Move-Item -Force -LiteralPath $path -Destination $archive
+        }
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $WorkDir,$SourceDir | Out-Null
@@ -131,7 +173,7 @@ if ($StatusOnly) {
 
 $existing = Get-SnapshotStatus $SourceDir
 if ($existing.complete) {
-    Write-State "PARENT_SNAPSHOT" "VERIFIED_COMPLETE" $null "Existing parent snapshot is complete; no network download required."
+    Write-State "PARENT_SNAPSHOT" "VERIFIED_COMPLETE" $null "Existing indexed parent snapshot is complete; no network download required."
     Write-Host "BLACK 7.27 parent snapshot already VERIFIED COMPLETE" -ForegroundColor Green
     Write-Host "State: $StatePath"
     exit 0
@@ -148,25 +190,31 @@ if ($active.Count -gt 0) {
     }
 
     $attachedPid = [int]$matching[0].ProcessId
-    Write-Host "==> Attaching to existing Windows HF parent transfer PID $attachedPid" -ForegroundColor Yellow
-    while ($true) {
-        $live = Get-CimInstance Win32_Process -Filter "ProcessId = $attachedPid" -ErrorAction SilentlyContinue
-        if (-not $live) { break }
-        if (-not $live.CommandLine -or $live.CommandLine -notmatch [regex]::Escape([string]$Lock.uncensored_parent.repo)) { break }
-        Write-State "PARENT_SNAPSHOT" "DOWNLOADING" $attachedPid "Attached to an existing Windows hf.exe transfer; no duplicate process was started."
-        $bytes = Get-DirectoryBytes $SourceDir
-        Write-Host ("[7.27] attached pid={0} parent={1:N2} GiB latest={2}" -f $attachedPid,($bytes/1GB),(Get-LatestWrite $SourceDir))
-        Start-Sleep -Seconds $PollSeconds
+    Write-Host "==> Attaching watchdog to existing Windows HF parent transfer PID $attachedPid" -ForegroundColor Yellow
+    Write-State "PARENT_SNAPSHOT" "DOWNLOADING_ATTACHED" $attachedPid "Watching an existing matching hf.exe; no duplicate process was started."
+    $watch = Invoke-Watchdog $attachedPid
+
+    if ($watch.verdict -eq "PROCESS_MISMATCH") {
+        throw "Attached HF PID $attachedPid changed identity while being watched; refusing to stop or reuse it."
+    }
+    if ($watch.verdict -eq "STALLED_STOPPED") {
+        $script:StallRestartsUsed++
+        Write-State "PARENT_SNAPSHOT" "STALLED_RESTARTING" $attachedPid "Attached transfer made no observable filesystem/log/process-I/O progress for $($watch.idle_seconds)s and was stopped after identity revalidation. Partial files were preserved."
+        if ($script:StallRestartsUsed -gt $MaxStallRestarts) {
+            Write-State "PARENT_SNAPSHOT" "FAILED_STALL_BUDGET" $null "Stall restart budget exhausted after attached transfer stall. Partial files were preserved."
+            throw "Pinned parent transfer exhausted the stall restart budget ($MaxStallRestarts). Partial data is preserved at $SourceDir."
+        }
+        Start-Sleep -Seconds $RetryBackoffSeconds
     }
 
     $afterAttach = Get-SnapshotStatus $SourceDir
     if ($afterAttach.complete) {
-        Write-State "PARENT_SNAPSHOT" "VERIFIED_COMPLETE" $null "Attached transfer ended with a complete pinned parent snapshot."
+        Write-State "PARENT_SNAPSHOT" "VERIFIED_COMPLETE" $null "Attached transfer ended with a complete indexed pinned parent snapshot."
         Write-Host "BLACK 7.27 attached parent transfer VERIFIED COMPLETE" -ForegroundColor Green
         exit 0
     }
 
-    Write-State "PARENT_SNAPSHOT" "RESUME_REQUIRED" $null "Attached hf.exe ended before snapshot completeness; existing partial files are preserved and will be resumed."
+    Write-State "PARENT_SNAPSHOT" "RESUME_REQUIRED" $null "Attached hf.exe ended or was watchdog-stopped before snapshot completeness; existing partial files are preserved and will be resumed."
     Write-Host "[7.27] attached transfer ended incomplete; resuming the same SourceDir without purge." -ForegroundColor Yellow
 }
 
@@ -201,26 +249,46 @@ $previousTimeout = $env:HF_HUB_DOWNLOAD_TIMEOUT
 $env:HF_XET_HIGH_PERFORMANCE = "1"
 $env:HF_HUB_DOWNLOAD_TIMEOUT = "600"
 try {
-    Write-State "PARENT_SNAPSHOT" "STARTING" $null "Starting resumable pinned parent download through Windows hf.exe / HF Xet."
-    $args = @("download",[string]$Lock.uncensored_parent.repo,"--revision",[string]$Lock.uncensored_parent.revision,"--local-dir",$SourceDir)
-    $process = Start-Process -FilePath $Hf -ArgumentList $args -WorkingDirectory $env:SystemRoot -PassThru -RedirectStandardOutput $StdoutPath -RedirectStandardError $StderrPath
-    while (-not $process.HasExited) {
-        Write-State "PARENT_SNAPSHOT" "DOWNLOADING" ([int]$process.Id) "Windows hf.exe is active. A replacement CLI can rerun this script and attach instead of starting a duplicate."
-        $bytes = Get-DirectoryBytes $SourceDir
-        Write-Host ("[7.27] downloading pid={0} parent={1:N2} GiB latest={2}" -f $process.Id,($bytes/1GB),(Get-LatestWrite $SourceDir))
-        Start-Sleep -Seconds $PollSeconds
+    while ($true) {
+        $attempt = $script:StallRestartsUsed + 1
+        Rotate-TransferLogs $attempt
+        Write-State "PARENT_SNAPSHOT" "STARTING" $null "Starting resumable pinned parent download attempt $attempt through Windows hf.exe / HF Xet."
+        $args = @("download",[string]$Lock.uncensored_parent.repo,"--revision",[string]$Lock.uncensored_parent.revision,"--local-dir",$SourceDir)
+        $process = Start-Process -FilePath $Hf -ArgumentList $args -WorkingDirectory $env:SystemRoot -PassThru -RedirectStandardOutput $StdoutPath -RedirectStandardError $StderrPath
+        Write-State "PARENT_SNAPSHOT" "DOWNLOADING" ([int]$process.Id) "Windows hf.exe attempt $attempt is active under the stall watchdog. A replacement CLI can rerun this script and attach instead of starting a duplicate."
+        Write-Host ("[7.27] downloading attempt={0} pid={1} parent={2:N2} GiB latest={3}" -f $attempt,$process.Id,((Get-DirectoryBytes $SourceDir)/1GB),(Get-LatestWrite $SourceDir))
+
+        $watch = Invoke-Watchdog ([int]$process.Id)
+        if ($watch.verdict -eq "PROCESS_MISMATCH") {
+            throw "HF PID $($process.Id) changed identity while being watched; refusing to continue."
+        }
+        if ($watch.verdict -eq "STALLED_STOPPED") {
+            $script:StallRestartsUsed++
+            Write-State "PARENT_SNAPSHOT" "STALLED_RESTARTING" ([int]$process.Id) "No observable filesystem/log/process-I/O progress for $($watch.idle_seconds)s. The matching process tree was stopped; partial files remain in place."
+            if ($script:StallRestartsUsed -gt $MaxStallRestarts) {
+                Write-State "PARENT_SNAPSHOT" "FAILED_STALL_BUDGET" $null "Stall restart budget exhausted. Partial files were preserved for manual inspection/resume."
+                throw "Pinned parent transfer stalled more than $MaxStallRestarts time(s). Partial data is preserved at $SourceDir."
+            }
+            Write-Host "[7.27] stalled HF attempt stopped; preserving partials and retrying after $RetryBackoffSeconds seconds ($script:StallRestartsUsed/$MaxStallRestarts restarts used)." -ForegroundColor Yellow
+            Start-Sleep -Seconds $RetryBackoffSeconds
+            continue
+        }
+
         $process.Refresh()
+        $exitCode = if ($process.HasExited) { $process.ExitCode } else { -1 }
+        if ($exitCode -ne 0) {
+            $detail = if (Test-Path -LiteralPath $StderrPath) { ((Get-Content -Tail 40 -LiteralPath $StderrPath -ErrorAction SilentlyContinue) -join "`n").Trim() } else { "" }
+            Write-State "PARENT_SNAPSHOT" "FAILED" ([int]$process.Id) "hf.exe exit=$exitCode $detail"
+            throw "Pinned parent download failed with exit code $exitCode. Partial files were preserved for resume. $detail"
+        }
+
+        Assert-SnapshotComplete $SourceDir
+        Write-State "PARENT_SNAPSHOT" "VERIFIED_COMPLETE" ([int]$process.Id) "All shards named by model.safetensors.index.json are present and non-empty. Parent snapshot is ready for build reuse."
+        Write-Host "BLACK 7.27 parent snapshot VERIFIED COMPLETE" -ForegroundColor Green
+        Write-Host "Parent: $SourceDir"
+        Write-Host "State:  $StatePath"
+        break
     }
-    if ($process.ExitCode -ne 0) {
-        $detail = if (Test-Path -LiteralPath $StderrPath) { ((Get-Content -Tail 40 -LiteralPath $StderrPath -ErrorAction SilentlyContinue) -join "`n").Trim() } else { "" }
-        Write-State "PARENT_SNAPSHOT" "FAILED" ([int]$process.Id) "hf.exe exit=$($process.ExitCode) $detail"
-        throw "Pinned parent download failed with exit code $($process.ExitCode). Partial files were preserved for resume. $detail"
-    }
-    Assert-SnapshotComplete $SourceDir
-    Write-State "PARENT_SNAPSHOT" "VERIFIED_COMPLETE" ([int]$process.Id) "All indexed safetensor shards are present and non-empty. Parent snapshot is ready for build reuse."
-    Write-Host "BLACK 7.27 parent snapshot VERIFIED COMPLETE" -ForegroundColor Green
-    Write-Host "Parent: $SourceDir"
-    Write-Host "State:  $StatePath"
 } finally {
     if ($null -eq $previousXet) { Remove-Item Env:HF_XET_HIGH_PERFORMANCE -ErrorAction SilentlyContinue } else { $env:HF_XET_HIGH_PERFORMANCE = $previousXet }
     if ($null -eq $previousTimeout) { Remove-Item Env:HF_HUB_DOWNLOAD_TIMEOUT -ErrorAction SilentlyContinue } else { $env:HF_HUB_DOWNLOAD_TIMEOUT = $previousTimeout }
