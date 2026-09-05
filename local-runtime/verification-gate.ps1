@@ -1,6 +1,7 @@
 param(
     [string]$ProjectRoot = (Get-Location).Path,
-    [string]$RuntimeCommand = ""
+    [string]$RuntimeCommand = "",
+    [string]$RuntimeRoot = ""
 )
 
 Set-StrictMode -Version Latest
@@ -19,17 +20,90 @@ function Resolve-CommandPath([string[]]$Names) {
     return $null
 }
 
+function Test-InGitWorkTree([string]$Path) {
+    $cursor = [IO.DirectoryInfo](Resolve-Path -LiteralPath $Path).Path
+    while ($cursor) {
+        if (Test-Path -LiteralPath (Join-Path $cursor.FullName ".git")) { return $true }
+        $cursor = $cursor.Parent
+    }
+    return $false
+}
+
 function Invoke-Check([string]$Name, [string]$File, [string[]]$Arguments) {
     Write-Host "[BLACK VERIFY] $Name" -ForegroundColor Cyan
+    $stdout = [IO.Path]::GetTempFileName()
+    $stderr = [IO.Path]::GetTempFileName()
     Push-Location $Root
     try {
-        & $File @Arguments
-        $code = $LASTEXITCODE
-        if ($null -eq $code) { $code = 0 }
+        $process = Start-Process -FilePath $File -ArgumentList $Arguments -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        $outText = Get-Content -Raw -LiteralPath $stdout -ErrorAction SilentlyContinue
+        $errText = Get-Content -Raw -LiteralPath $stderr -ErrorAction SilentlyContinue
+        if ($outText) { Write-Host $outText.TrimEnd() }
+        if ($errText) { Write-Host $errText.TrimEnd() -ForegroundColor DarkYellow }
+        $code = $process.ExitCode
         if ($code -ne 0) { throw "$Name failed with exit code $code" }
         [void]$Checks.Add($Name)
     }
-    finally { Pop-Location }
+    finally {
+        Pop-Location
+        Remove-Item -Force -ErrorAction SilentlyContinue $stdout, $stderr
+    }
+}
+
+function Get-GitStateDigest([string]$Repository) {
+    $rows = @(& $git -C $Repository status --porcelain=v1 --untracked-files=all 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw "Unable to read git state for $Repository" }
+    $evidence = New-Object System.Collections.Generic.List[string]
+    foreach ($row in $rows) {
+        if (-not $row) { continue }
+        $path = ([string]$row).Substring(3)
+        if ($path -match ' -> ') { $path = ($path -split ' -> ', 2)[1] }
+        $path = $path.Trim('"')
+        $full = Join-Path $Repository $path
+        $digest = if (Test-Path -LiteralPath $full -PathType Leaf) {
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $full).Hash.ToLowerInvariant()
+        } else { "missing" }
+        [void]$evidence.Add("$row`t$digest")
+    }
+    $text = (@($evidence) -join "`n")
+    $bytes = [Text.Encoding]::UTF8.GetBytes($text)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+function Assert-RuntimeIntegrity([string]$Path) {
+    $runtime = (Resolve-Path -LiteralPath $Path).Path
+    $launcher = $PSScriptRoot
+    $runtimeLockPath = Join-Path $launcher "runtime.lock.json"
+    $modelLockPath = Join-Path $launcher "model-7.27.lock.json"
+    $statePath = Join-Path $runtime "state.json"
+    $manifestPath = Join-Path $runtime "models\model-7.27.local.json"
+    foreach ($required in @($runtimeLockPath, $modelLockPath, $statePath, $manifestPath)) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Runtime integrity input missing: $required" }
+    }
+    $runtimeLock = Get-Content -Raw -LiteralPath $runtimeLockPath | ConvertFrom-Json
+    $modelLock = Get-Content -Raw -LiteralPath $modelLockPath | ConvertFrom-Json
+    $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
+    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+    if ($state.canonical_runtime -ne "opencode-llama-governed-v5-black-7.27") { throw "Runtime state identity mismatch" }
+    if ($state.opencode_version -ne $runtimeLock.opencode.version) { throw "Runtime state OpenCode version mismatch" }
+    if ($state.llama_binary_tag -ne $runtimeLock.llama_cpp.binary_tag -or $state.llama_commit -ne $runtimeLock.llama_cpp.target_commit) { throw "Runtime state llama.cpp version mismatch" }
+    if ($manifest.status -ne "CANONICAL_FIXED" -or $manifest.model_file -ne $modelLock.canonical_model.file) { throw "Canonical model manifest identity mismatch" }
+    if ($manifest.parent_revision -ne $modelLock.uncensored_parent.revision) { throw "Canonical model manifest parent mismatch" }
+    if ($state.model -ne $manifest.model_file -or $state.model_sha256 -ne $manifest.model_sha256 -or [int64]$state.model_size_bytes -ne [int64]$manifest.model_bytes) { throw "Runtime state/model manifest mismatch" }
+    $opencode = Resolve-CommandPath @("opencode.cmd", "opencode.exe", "opencode")
+    if (-not $opencode) { throw "Pinned OpenCode runtime was not found" }
+    $global:LASTEXITCODE = 0
+    $actualOpenCode = ((& $opencode --version 2>$null | Select-Object -First 1) | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $actualOpenCode -ne [string]$runtimeLock.opencode.version) { throw "OpenCode runtime version mismatch: expected $($runtimeLock.opencode.version), got $actualOpenCode" }
+    $server = [string]$state.llama_server
+    if (-not (Test-Path -LiteralPath $server -PathType Leaf)) { throw "Pinned llama-server runtime was not found: $server" }
+    $global:LASTEXITCODE = 0
+    $llamaVersion = ((& $server --version 2>&1) | Out-String).Trim()
+    $commitPrefix = ([string]$runtimeLock.llama_cpp.target_commit).Substring(0, 8)
+    if ($LASTEXITCODE -ne 0 -or ($llamaVersion -notmatch [regex]::Escape([string]$runtimeLock.llama_cpp.binary_tag) -and $llamaVersion -notmatch [regex]::Escape($commitPrefix) -and $llamaVersion -notmatch '(?i)build\s+10809')) { throw "llama.cpp runtime version mismatch" }
+    [void]$Checks.Add("runtime-integrity")
 }
 
 function Invoke-RuntimeCheck([string]$Command) {
@@ -44,19 +118,56 @@ function Invoke-RuntimeCheck([string]$Command) {
 }
 
 $git = Resolve-CommandPath @("git.exe", "git")
+if (-not $git) {
+    foreach ($candidate in @(
+        (Join-Path $env:ProgramFiles "Git\cmd\git.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\Git\cmd\git.exe")
+    )) { if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { $git = $candidate; break } }
+}
+$projectHasGitMetadata = Test-InGitWorkTree $Root
+if ($projectHasGitMetadata -and -not $git) { throw "Git worktree detected but git is unavailable; final verification cannot prove workspace stability." }
 $gitRepo = $false
 if ($git) {
     $previousErrorAction = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
         $inside = & $git -C $Root rev-parse --is-inside-work-tree 2>$null
-        $gitRepo = ($LASTEXITCODE -eq 0) -and (([string]$inside).Trim() -eq "true")
+        $gitRepo = ($LASTEXITCODE -eq 0) -and ([Convert]::ToString($inside).Trim() -eq "true")
     }
     finally { $ErrorActionPreference = $previousErrorAction }
 }
+if ($projectHasGitMetadata -and -not $gitRepo) { throw "Git worktree could not be inspected; final verification cannot prove tracked or untracked workspace stability." }
 if ($gitRepo) {
     Invoke-Check "git-diff-check" $git @("-C", $Root, "diff", "--check")
 }
+
+$sourceRepo = $false
+if ($git) {
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $sourceInside = & $git -C $PSScriptRoot rev-parse --is-inside-work-tree 2>$null
+        $sourceRepo = ($LASTEXITCODE -eq 0) -and ([Convert]::ToString($sourceInside).Trim() -eq "true")
+    }
+    finally { $ErrorActionPreference = $previousErrorAction }
+}
+$sourceHasGitMetadata = Test-InGitWorkTree $PSScriptRoot
+if ($sourceHasGitMetadata -and -not $sourceRepo) { throw "BLACK Code runtime source worktree could not be inspected; VERIFIED is forbidden." }
+if ($sourceRepo) {
+    $sourceStatus = @(& $git -C $PSScriptRoot status --porcelain=v1 --untracked-files=all -- . 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw "Unable to inspect BLACK Code runtime source" }
+    if ($sourceStatus.Count -gt 0) { throw "BLACK Code runtime source is dirty (tracked or untracked); VERIFIED is forbidden.`n$($sourceStatus -join "`n")" }
+    [void]$Checks.Add("runtime-source-clean")
+}
+
+if (-not $RuntimeRoot -and $env:LOCALAPPDATA) {
+    $candidate = Join-Path $env:LOCALAPPDATA "BLACK-Code\runtime"
+    $hasLauncherLocks = (Test-Path -LiteralPath (Join-Path $PSScriptRoot "runtime.lock.json")) -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot "model-7.27.lock.json"))
+    if ($hasLauncherLocks -and ((Test-Path -LiteralPath (Join-Path $candidate "state.json")) -or (Test-Path -LiteralPath (Join-Path $candidate "models\model-7.27.local.json")))) { $RuntimeRoot = $candidate }
+}
+if ($RuntimeRoot) { Assert-RuntimeIntegrity $RuntimeRoot }
+
+$projectStateBefore = if ($gitRepo) { Get-GitStateDigest $Root } else { $null }
 
 $packageJson = Join-Path $Root "package.json"
 $pyproject = Join-Path $Root "pyproject.toml"
@@ -151,6 +262,11 @@ elseif ($dotnetProject) {
 if ($RuntimeCommand.Trim()) {
     Invoke-RuntimeCheck $RuntimeCommand
     $Strength = [Math]::Max($Strength, 3)
+}
+
+if ($gitRepo) {
+    $projectStateAfter = Get-GitStateDigest $Root
+    if ($projectStateAfter -ne $projectStateBefore) { throw "Project files changed during final verification; rerun verification against the final state." }
 }
 
 if ($Strength -lt 3) {

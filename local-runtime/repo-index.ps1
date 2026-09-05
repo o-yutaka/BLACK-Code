@@ -60,7 +60,10 @@ function Get-BlackCodeRepoIndex(
         return [ordered]@{ index = $fallback; index_path = $indexPath; context_path = $contextPath }
     }
 
-    $head = (& $git.Source -C $resolved rev-parse HEAD 2>$null | Select-Object -First 1)
+    # Windows PowerShell 5.1 cannot invoke an application directly in the
+    # middle of a parenthesized pipeline on some UNC-backed worktrees.
+    $headRows = @(& $git.Source -C $resolved rev-parse HEAD 2>$null)
+    $head = $headRows | Select-Object -First 1
     if ($LASTEXITCODE -ne 0 -or -not $head) { $head = $null } else { $head = ([string]$head).Trim() }
 
     $cached = $null

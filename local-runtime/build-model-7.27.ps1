@@ -25,7 +25,9 @@ $DraftPath = Join-Path $ModelDir $Lock.mtp_draft.file
 $SourceDir = Join-Path $WorkDir "uncensored-parent"
 $LlamaSource = Join-Path $WorkDir "llama.cpp"
 $F16Path = Join-Path $WorkDir "uncensored-no-mtp-f16.gguf"
+$F16ProvenancePath = "$F16Path.provenance.json"
 $TensorMap = Join-Path $WorkDir "tensor-types-7.27.txt"
+$TensorEvidencePath = Join-Path $WorkDir "tensor-types-7.27.evidence.json"
 $ImatrixPath = Join-Path $WorkDir $Lock.imatrix.file
 $TempOutput = "$OutputPath.building"
 $VenvDir = Join-Path $WorkDir ".venv"
@@ -164,7 +166,7 @@ Invoke-Native $Git @("-C",$LlamaSource,"checkout","--detach","FETCH_HEAD") "chec
 $Requirements = Join-Path $LlamaSource "requirements\requirements-convert_hf_to_gguf.txt"
 Invoke-Native $VenvPython @("-m","pip","install","--disable-pip-version-check","-r",$Requirements) "install pinned converter requirements"
 
-if ($ForceRebuild -and (Test-Path -LiteralPath $F16Path)) { Remove-Item -Force $F16Path }
+if ($ForceRebuild) { Remove-Item -Force -ErrorAction SilentlyContinue $F16Path,$F16ProvenancePath }
 if (-not (Test-Path -LiteralPath $F16Path)) {
     $freeBeforeF16 = [IO.DriveInfo]::new($root).AvailableFreeSpace
     $MinFreeBeforeF16 = 60000000000L
@@ -174,7 +176,30 @@ if (-not (Test-Path -LiteralPath $F16Path)) {
     $Converter = Join-Path $LlamaSource "convert_hf_to_gguf.py"
     Invoke-Native $VenvPython @($Converter,$SourceDir,"--outfile",$F16Path,"--outtype","f16","--no-mtp") "convert pinned uncensored parent to no-MTP F16 GGUF"
     Assert-Gguf $F16Path
+    $F16Bytes = (Get-Item -LiteralPath $F16Path).Length
+    $F16Sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $F16Path).Hash.ToLowerInvariant()
+    [ordered]@{
+        schema_version = "1.0"
+        source_repo = [string]$Lock.uncensored_parent.repo
+        source_revision = [string]$Lock.uncensored_parent.revision
+        converter_repo = [string]$Lock.llama_cpp_conversion_source.repo
+        converter_revision = [string]$Lock.llama_cpp_conversion_source.revision
+        outtype = "f16"
+        no_mtp = $true
+        file = [IO.Path]::GetFileName($F16Path)
+        bytes = $F16Bytes
+        sha256 = $F16Sha
+    } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $F16ProvenancePath
 }
+Assert-Gguf $F16Path
+if ((Get-Item -LiteralPath $F16Path).Length -le 0) { throw "F16 intermediate is empty: $F16Path" }
+if (-not (Test-Path -LiteralPath $F16ProvenancePath)) { throw "F16 provenance is missing; rerun with -ForceRebuild to regenerate from the pinned parent." }
+$F16Provenance = Get-Content -Raw -LiteralPath $F16ProvenancePath | ConvertFrom-Json
+if ($F16Provenance.source_repo -ne [string]$Lock.uncensored_parent.repo -or $F16Provenance.source_revision -ne [string]$Lock.uncensored_parent.revision -or $F16Provenance.converter_revision -ne [string]$Lock.llama_cpp_conversion_source.revision -or -not $F16Provenance.no_mtp) {
+    throw "F16 provenance does not match the pinned 7.27 build inputs; rerun with -ForceRebuild."
+}
+if ([int64]$F16Provenance.bytes -ne (Get-Item -LiteralPath $F16Path).Length) { throw "F16 provenance byte count mismatch" }
+Assert-Sha $F16Path ([string]$F16Provenance.sha256) "F16 provenance"
 if (-not $KeepIntermediate -and (Test-Path -LiteralPath $SourceDir)) {
     Remove-Item -Recurse -Force $SourceDir
     Write-Host "[7.27] removed parent snapshot after verified F16 conversion to release disk space"
@@ -188,10 +213,25 @@ if (-not (Test-Path -LiteralPath $ImatrixPath) -or $ForceRebuild) {
 Assert-Sha $ImatrixPath $Lock.imatrix.sha256 "Uncensored imatrix"
 
 $ReferenceUrl = Get-HfUrl $Lock.quant_map_reference
-Invoke-Native $Node @($MapExtractor,$ReferenceUrl,$TensorMap,$F16Path) "extract pinned 7.27 tensor map and assert tensor inventory"
+Remove-Item -Force -ErrorAction SilentlyContinue $TensorEvidencePath
+Invoke-Native $Node @($MapExtractor,$ReferenceUrl,$TensorMap,$F16Path,$TensorEvidencePath) "extract pinned 7.27 tensor map and assert tensor inventory"
 if (-not (Test-Path -LiteralPath $TensorMap)) { throw "tensor type map was not generated" }
+if (-not (Test-Path -LiteralPath $TensorEvidencePath)) { throw "tensor map Range evidence was not generated" }
 $mapLines = @(Get-Content -LiteralPath $TensorMap | Where-Object { $_.Trim() })
 if ($mapLines.Count -lt 100) { throw "tensor type map is unexpectedly small: $($mapLines.Count) entries" }
+$TensorEvidence = Get-Content -Raw -LiteralPath $TensorEvidencePath | ConvertFrom-Json
+if ($TensorEvidence.status -ne "PASS" -or -not $TensorEvidence.local_f16.names_match_reference) { throw "tensor inventory evidence did not pass" }
+if ([int64]$TensorEvidence.reference.tensor_count -ne $mapLines.Count -or [int64]$TensorEvidence.tensor_map.entries -ne $mapLines.Count) { throw "tensor evidence count does not match generated map" }
+if ($TensorEvidence.reference.full_reference_downloaded -or $TensorEvidence.reference.full_reference_sha256_measured) { throw "Range-only reference evidence flags are inconsistent" }
+$MeasuredMapSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $TensorMap).Hash.ToLowerInvariant()
+if ($MeasuredMapSha -ne [string]$TensorEvidence.tensor_map.sha256) { throw "tensor map SHA256 does not match extractor evidence" }
+$MeasuredRanges = @($TensorEvidence.reference.fetched_ranges)
+if ($MeasuredRanges.Count -lt 1) { throw "no measured reference Range evidence was recorded" }
+foreach ($range in $MeasuredRanges) {
+    if ([int64]$range.received_bytes -le 0 -or [int64]$range.remote_total_bytes -le [int64]$range.received_bytes -or ([string]$range.sha256) -notmatch '^[0-9a-f]{64}$' -or ([string]$range.content_range) -notmatch '^bytes 0-[0-9]+/[0-9]+$') {
+        throw "invalid measured reference Range evidence"
+    }
+}
 
 Remove-Item -Force -ErrorAction SilentlyContinue $TempOutput
 $DryRunLog = Join-Path $WorkDir "quantize-dry-run.log"
@@ -227,9 +267,22 @@ $manifest = [ordered]@{
     parent_snapshot_verified_complete = $true
     quant_map_reference_repo = [string]$Lock.quant_map_reference.repo
     quant_map_reference_revision = [string]$Lock.quant_map_reference.revision
-    quant_map_reference_sha256 = [string]$Lock.quant_map_reference.sha256
+    quant_map_reference_expected_full_sha256 = [string]$Lock.quant_map_reference.sha256
+    quant_map_reference_full_sha256_measured = $false
+    quant_map_reference_full_downloaded = $false
+    quant_map_reference_range_evidence = @($MeasuredRanges | ForEach-Object {
+        [ordered]@{ content_range = [string]$_.content_range; received_bytes = [int64]$_.received_bytes; remote_total_bytes = [int64]$_.remote_total_bytes; sha256 = [string]$_.sha256; etag = [string]$_.etag; resolved_url = [string]$_.resolved_url }
+    })
     imatrix_sha256 = [string]$Lock.imatrix.sha256
     tensor_map_entries = $mapLines.Count
+    tensor_map_sha256 = [string]$TensorEvidence.tensor_map.sha256
+    reference_tensor_inventory_sha256 = [string]$TensorEvidence.reference.tensor_inventory_sha256
+    local_f16_bytes = [int64]$TensorEvidence.local_f16.bytes
+    local_f16_sha256 = [string]$F16Provenance.sha256
+    local_f16_provenance_verified = $true
+    local_f16_tensor_count = [int64]$TensorEvidence.local_f16.tensor_count
+    local_f16_tensor_inventory_sha256 = [string]$TensorEvidence.local_f16.tensor_inventory_sha256
+    local_f16_names_match_reference = [bool]$TensorEvidence.local_f16.names_match_reference
     llama_conversion_revision = [string]$Lock.llama_cpp_conversion_source.revision
     quantizer_version = $QuantizerVersion
     huggingface_hub_version = $HfHubVersion
@@ -239,7 +292,7 @@ $manifest = [ordered]@{
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $ManifestPath
 
 if (-not $KeepIntermediate) {
-    Remove-Item -Force -ErrorAction SilentlyContinue $F16Path,$ImatrixPath,$TensorMap,$DryRunLog
+    Remove-Item -Force -ErrorAction SilentlyContinue $F16Path,$F16ProvenancePath,$ImatrixPath,$TensorMap,$TensorEvidencePath,$DryRunLog
 }
 Write-Host "BLACK 7.27 MODEL BUILT AND PINNED LOCALLY" -ForegroundColor Green
 Write-Host "Model:  $OutputPath"

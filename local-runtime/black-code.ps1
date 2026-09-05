@@ -80,10 +80,49 @@ New-Item -ItemType Directory -Force -Path $LogDir, $FabricEvidenceDir, $RepoInde
 . (Resolve-RuntimeFile "execution-fabric.ps1")
 . (Resolve-RuntimeFile "repo-index.ps1")
 
+$modelLock = Get-Content -Raw -LiteralPath (Resolve-RuntimeFile "model-7.27.lock.json") | ConvertFrom-Json
+$runtimeLock = Get-Content -Raw -LiteralPath (Resolve-RuntimeFile "runtime.lock.json") | ConvertFrom-Json
+if ($ModelFile -ne [string]$modelLock.canonical_model.file -or $DraftFile -ne [string]$modelLock.mtp_draft.file) { throw "Runtime model names do not match the canonical lock files." }
 $modelManifest = Get-Content -Raw -LiteralPath $ModelManifestPath | ConvertFrom-Json
-if ($modelManifest.status -ne "CANONICAL_FIXED" -or $modelManifest.model_file -ne $ModelFile) { throw "BLACK 7.27 local model manifest is not canonical. Run setup.ps1 again." }
 $actualModelBytes = (Get-Item -LiteralPath $ModelPath).Length
-if ($actualModelBytes -ne [int64]$modelManifest.model_bytes) { throw "BLACK 7.27 model size no longer matches its pinned manifest. Run setup.ps1 again." }
+$actualModelSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $ModelPath).Hash.ToLowerInvariant()
+$rangeEvidence = @($modelManifest.quant_map_reference_range_evidence)
+$rangeEvidenceValid = $rangeEvidence.Count -ge 1
+foreach($range in $rangeEvidence){
+    if([int64]$range.received_bytes -le 0 -or [int64]$range.remote_total_bytes -le [int64]$range.received_bytes -or ([string]$range.sha256) -notmatch '^[0-9a-f]{64}$' -or ([string]$range.content_range) -notmatch '^bytes 0-[0-9]+/[0-9]+$'){$rangeEvidenceValid=$false}
+}
+if ($modelManifest.schema_version -ne "1.1" -or $modelManifest.status -ne "CANONICAL_FIXED" -or $modelManifest.model_file -ne $ModelFile -or
+    [int64]$modelManifest.model_bytes -ne $actualModelBytes -or ([string]$modelManifest.model_sha256).ToLowerInvariant() -ne $actualModelSha -or
+    $modelManifest.no_mtp -ne $true -or $modelManifest.vision -ne $false -or
+    $modelManifest.parent_repo -ne $modelLock.uncensored_parent.repo -or $modelManifest.parent_revision -ne $modelLock.uncensored_parent.revision -or
+    $modelManifest.parent_snapshot_verified_complete -ne $true -or
+    $modelManifest.quant_map_reference_repo -ne $modelLock.quant_map_reference.repo -or $modelManifest.quant_map_reference_revision -ne $modelLock.quant_map_reference.revision -or
+    ([string]$modelManifest.quant_map_reference_expected_full_sha256).ToLowerInvariant() -ne ([string]$modelLock.quant_map_reference.sha256).ToLowerInvariant() -or
+    $modelManifest.quant_map_reference_full_sha256_measured -ne $false -or $modelManifest.quant_map_reference_full_downloaded -ne $false -or -not $rangeEvidenceValid -or
+    ([string]$modelManifest.imatrix_sha256).ToLowerInvariant() -ne ([string]$modelLock.imatrix.sha256).ToLowerInvariant() -or
+    [int64]$modelManifest.tensor_map_entries -lt 100 -or ([string]$modelManifest.tensor_map_sha256) -notmatch '^[0-9a-f]{64}$' -or
+    ([string]$modelManifest.reference_tensor_inventory_sha256) -notmatch '^[0-9a-f]{64}$' -or
+    [int64]$modelManifest.local_f16_bytes -le 0 -or ([string]$modelManifest.local_f16_sha256) -notmatch '^[0-9a-f]{64}$' -or $modelManifest.local_f16_provenance_verified -ne $true -or
+    [int64]$modelManifest.local_f16_tensor_count -ne [int64]$modelManifest.tensor_map_entries -or ([string]$modelManifest.local_f16_tensor_inventory_sha256) -notmatch '^[0-9a-f]{64}$' -or
+    $modelManifest.local_f16_tensor_inventory_sha256 -ne $modelManifest.reference_tensor_inventory_sha256 -or $modelManifest.local_f16_names_match_reference -ne $true -or
+    $modelManifest.llama_conversion_revision -ne $modelLock.llama_cpp_conversion_source.revision -or
+    $modelManifest.quantization -ne "BLACK-UD-IQ2_XXS exact-reference-tensor-map") { throw "BLACK 7.27 model artifact/manifest/lock integrity verification failed. Run setup.ps1 again." }
+$actualDraftBytes = (Get-Item -LiteralPath $DraftPath).Length
+$actualDraftSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $DraftPath).Hash.ToLowerInvariant()
+if ($actualDraftBytes -lt [int64]$modelLock.mtp_draft.minimum_bytes -or $actualDraftSha -ne ([string]$modelLock.mtp_draft.sha256).ToLowerInvariant()) { throw "BLACK 7.27 MTP artifact failed its pinned size/SHA verification. Run setup.ps1 again." }
+$llamaText = ((& $ServerExe --version 2>&1) | Out-String)
+$llamaTag = [string]$runtimeLock.llama_cpp.binary_tag
+$llamaPrefix = ([string]$runtimeLock.llama_cpp.target_commit).Substring(0,8)
+if ($LASTEXITCODE -ne 0 -or (($llamaText -notmatch [regex]::Escape($llamaTag)) -and ($llamaText -notmatch '(?i)build\s+10809')) -or $llamaText -notmatch [regex]::Escape($llamaPrefix)) { throw "llama.cpp runtime does not match pinned $llamaTag / $llamaPrefix." }
+Refresh-Path
+$pinnedOpenCode = [string]$runtimeLock.opencode.version
+$openCodeCommand = Get-Command "opencode" -ErrorAction Stop
+$actualOpenCode = ((& $openCodeCommand.Source --version 2>$null | Select-Object -First 1).ToString().Trim())
+if ($LASTEXITCODE -ne 0 -or $actualOpenCode -ne $pinnedOpenCode) { throw "OpenCode runtime version mismatch. Expected $pinnedOpenCode, got $actualOpenCode." }
+$npmRoot = ((& npm.cmd root -g 2>$null | Select-Object -First 1).ToString().Trim())
+$openCodePackagePath = Join-Path $npmRoot (([string]$runtimeLock.opencode.npm_package)+"\package.json")
+$openCodePackage = Get-Content -Raw -LiteralPath $openCodePackagePath | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $openCodePackage.name -ne [string]$runtimeLock.opencode.npm_package -or $openCodePackage.version -ne $pinnedOpenCode) { throw "OpenCode global package metadata does not match runtime.lock.json." }
 
 $projectRoot = (Get-Location).Path
 $repoIndex = Get-BlackCodeRepoIndex -ProjectRoot $projectRoot -IndexRoot $RepoIndexRoot
