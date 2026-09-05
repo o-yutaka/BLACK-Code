@@ -4,6 +4,7 @@ param(
     [string]$WorkDir = (Join-Path $env:LOCALAPPDATA "BLACK-Code\model-build-7.27"),
     [ValidateRange(1,16)][int]$HfDownloadWorkers = 8,
     [switch]$ForceRebuild,
+    [switch]$PurgeDownloadCache,
     [switch]$KeepIntermediate
 )
 
@@ -59,7 +60,34 @@ function Get-HelpText([string]$Exe) {
     } finally { Remove-Item -Force -ErrorAction SilentlyContinue $out,$err }
 }
 function Get-HfUrl([object]$Spec) {
-    return "https://huggingface.co/$($Spec.repo)/resolve/$($Spec.revision)/$($Spec.file)?download=true"
+    return "https://huggingface.co/" + [string]$Spec.repo + "/resolve/" + [string]$Spec.revision + "/" + [string]$Spec.file + "?download=true"
+}
+function Get-DirectoryBytes([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return 0L }
+    $sum = 0L
+    Get-ChildItem -LiteralPath $Path -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object { $sum += [int64]$_.Length }
+    return $sum
+}
+function Assert-HfSnapshotComplete([string]$Path) {
+    $config = Join-Path $Path "config.json"
+    if (-not (Test-Path -LiteralPath $config)) { throw "Parent snapshot incomplete: config.json missing after hf download." }
+    $indexPath = Join-Path $Path "model.safetensors.index.json"
+    if (Test-Path -LiteralPath $indexPath) {
+        $index = Get-Content -Raw -LiteralPath $indexPath | ConvertFrom-Json
+        $shards = @($index.weight_map.PSObject.Properties | ForEach-Object { [string]$_.Value } | Sort-Object -Unique)
+        if ($shards.Count -lt 1) { throw "Parent snapshot index contains no safetensor shards." }
+        $missing = [System.Collections.Generic.List[string]]::new()
+        foreach ($shard in $shards) {
+            $shardPath = Join-Path $Path $shard
+            if (-not (Test-Path -LiteralPath $shardPath) -or (Get-Item -LiteralPath $shardPath).Length -le 0) { [void]$missing.Add($shard) }
+        }
+        if ($missing.Count -gt 0) { throw "Parent snapshot incomplete after hf download; missing/empty shards: $([string]::Join(', ', @($missing | Select-Object -First 20)))" }
+        Write-Host "[7.27] parent snapshot complete: $($shards.Count) safetensor shards" -ForegroundColor Green
+        return
+    }
+    $single = @(Get-ChildItem -LiteralPath $Path -Filter "*.safetensors" -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 })
+    if ($single.Count -lt 1) { throw "Parent snapshot incomplete: no safetensors files found after hf download." }
+    Write-Host "[7.27] parent snapshot complete: $($single.Count) safetensors file(s)" -ForegroundColor Green
 }
 function Test-ExistingCanonical {
     if (-not (Test-Path -LiteralPath $OutputPath) -or -not (Test-Path -LiteralPath $ManifestPath)) { return $false }
@@ -90,8 +118,13 @@ $QuantizerVersion = (& $Quantize --version 2>&1 | Out-String).Trim()
 
 $root = [IO.Path]::GetPathRoot((Resolve-Path -LiteralPath $WorkDir).Path)
 $drive = [IO.DriveInfo]::new($root)
-$RequiredFree = 125000000000L
-if ($drive.AvailableFreeSpace -lt $RequiredFree) { throw ("7.27 build needs at least 125 GB free working space; available={0:N1} GB on {1}" -f ($drive.AvailableFreeSpace/1GB),$root) }
+$RequiredPeakBytes = 125000000000L
+$ReusableWorkBytes = if ($PurgeDownloadCache) { 0L } else { Get-DirectoryBytes $SourceDir }
+$EffectiveBuildCapacity = [int64]$drive.AvailableFreeSpace + [int64]$ReusableWorkBytes
+if ($EffectiveBuildCapacity -lt $RequiredPeakBytes) {
+    throw ("7.27 build needs at least 125 GB effective working capacity (free + resumable parent cache); free={0:N1} GiB reusable={1:N1} GiB on {2}" -f ($drive.AvailableFreeSpace/1GB),($ReusableWorkBytes/1GB),$root)
+}
+Write-Host ("[7.27] disk preflight: free={0:N1} GiB reusable-parent={1:N1} GiB effective={2:N1} GiB" -f ($drive.AvailableFreeSpace/1GB),($ReusableWorkBytes/1GB),($EffectiveBuildCapacity/1GB))
 
 if (-not (Test-Path -LiteralPath (Join-Path $VenvDir "Scripts\python.exe"))) {
     Invoke-Native $Python @("-m","venv",$VenvDir) "create build venv"
@@ -103,19 +136,23 @@ $Hf = Join-Path $VenvDir "Scripts\hf.exe"
 if (-not (Test-Path -LiteralPath $Hf)) { throw "hf CLI was not installed in build venv." }
 $HfHubVersion = (& $VenvPython -c "import huggingface_hub; print(huggingface_hub.__version__)" | Select-Object -First 1).Trim()
 
+if ($PurgeDownloadCache -and (Test-Path -LiteralPath $SourceDir)) {
+    Write-Host "[7.27] PURGE requested: removing parent snapshot/cache before download" -ForegroundColor Yellow
+    Remove-Item -Recurse -Force $SourceDir
+}
 $previousXet = $env:HF_XET_HIGH_PERFORMANCE
 $previousTimeout = $env:HF_HUB_DOWNLOAD_TIMEOUT
 $env:HF_XET_HIGH_PERFORMANCE = "1"
 $env:HF_HUB_DOWNLOAD_TIMEOUT = "600"
 try {
-    if ($ForceRebuild -and (Test-Path -LiteralPath $SourceDir)) { Remove-Item -Recurse -Force $SourceDir }
-    if (-not (Test-Path -LiteralPath (Join-Path $SourceDir "config.json"))) {
-        Invoke-Native $Hf @("download",[string]$Lock.uncensored_parent.repo,"--revision",[string]$Lock.uncensored_parent.revision,"--local-dir",$SourceDir) "parallel HF/Xet parent snapshot"
-    }
+    # Always invoke the pinned hf download. It is the resume/integrity step: completed files are reused,
+    # .incomplete files are resumed, and a stale config.json alone can never mark the snapshot complete.
+    Invoke-Native $Hf @("download",[string]$Lock.uncensored_parent.repo,"--revision",[string]$Lock.uncensored_parent.revision,"--local-dir",$SourceDir) "resume/validate parallel HF/Xet parent snapshot"
 } finally {
     if ($null -eq $previousXet) { Remove-Item Env:HF_XET_HIGH_PERFORMANCE -ErrorAction SilentlyContinue } else { $env:HF_XET_HIGH_PERFORMANCE = $previousXet }
     if ($null -eq $previousTimeout) { Remove-Item Env:HF_HUB_DOWNLOAD_TIMEOUT -ErrorAction SilentlyContinue } else { $env:HF_HUB_DOWNLOAD_TIMEOUT = $previousTimeout }
 }
+Assert-HfSnapshotComplete $SourceDir
 
 if (-not (Test-Path -LiteralPath (Join-Path $LlamaSource ".git"))) {
     New-Item -ItemType Directory -Force -Path $LlamaSource | Out-Null
@@ -129,13 +166,18 @@ Invoke-Native $VenvPython @("-m","pip","install","--disable-pip-version-check","
 
 if ($ForceRebuild -and (Test-Path -LiteralPath $F16Path)) { Remove-Item -Force $F16Path }
 if (-not (Test-Path -LiteralPath $F16Path)) {
+    $freeBeforeF16 = [IO.DriveInfo]::new($root).AvailableFreeSpace
+    $MinFreeBeforeF16 = 60000000000L
+    if ($freeBeforeF16 -lt $MinFreeBeforeF16) {
+        throw ("Not enough free space to safely create the F16 intermediate; need >=60 GB free after parent completion, available={0:N1} GiB. Parent cache is preserved for resume." -f ($freeBeforeF16/1GB))
+    }
     $Converter = Join-Path $LlamaSource "convert_hf_to_gguf.py"
     Invoke-Native $VenvPython @($Converter,$SourceDir,"--outfile",$F16Path,"--outtype","f16","--no-mtp") "convert pinned uncensored parent to no-MTP F16 GGUF"
     Assert-Gguf $F16Path
 }
 if (-not $KeepIntermediate -and (Test-Path -LiteralPath $SourceDir)) {
     Remove-Item -Recurse -Force $SourceDir
-    Write-Host "[7.27] removed parent snapshot after F16 conversion to release disk space"
+    Write-Host "[7.27] removed parent snapshot after verified F16 conversion to release disk space"
 }
 
 if (-not (Test-Path -LiteralPath $ImatrixPath) -or $ForceRebuild) {
@@ -171,7 +213,7 @@ $OutputSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $TempOutput).Hash.ToLo
 Move-Item -Force -LiteralPath $TempOutput -Destination $OutputPath
 
 $manifest = [ordered]@{
-    schema_version = "1.0"
+    schema_version = "1.1"
     status = "CANONICAL_FIXED"
     built_at = (Get-Date).ToString("o")
     model_file = [string]$Lock.canonical_model.file
@@ -182,6 +224,7 @@ $manifest = [ordered]@{
     vision = $false
     parent_repo = [string]$Lock.uncensored_parent.repo
     parent_revision = [string]$Lock.uncensored_parent.revision
+    parent_snapshot_verified_complete = $true
     quant_map_reference_repo = [string]$Lock.quant_map_reference.repo
     quant_map_reference_revision = [string]$Lock.quant_map_reference.revision
     quant_map_reference_sha256 = [string]$Lock.quant_map_reference.sha256
@@ -190,7 +233,7 @@ $manifest = [ordered]@{
     llama_conversion_revision = [string]$Lock.llama_cpp_conversion_source.revision
     quantizer_version = $QuantizerVersion
     huggingface_hub_version = $HfHubVersion
-    hf_parent_transport = "hf_xet_high_performance"
+    hf_parent_transport = "hf_xet_high_performance_resume_validated"
     quantization = "BLACK-UD-IQ2_XXS exact-reference-tensor-map"
 }
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath $ManifestPath
