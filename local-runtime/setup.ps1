@@ -132,9 +132,7 @@ function Get-OpenCodeVersion {
 }
 function Test-OpenCodePackagePinned {
     try {
-        $root=((& npm.cmd root -g 2>$null)|Select-Object -First 1).ToString().Trim()
-        if($LASTEXITCODE -ne 0 -or -not $root){return $false}
-        $packagePath=Join-Path $root (([string]$RuntimeLock.opencode.npm_package)+"\package.json")
+        $packagePath=Join-Path $env:APPDATA ("npm\node_modules\"+[string]$RuntimeLock.opencode.npm_package+"\package.json")
         if(-not(Test-Path -LiteralPath $packagePath)){return $false}
         $package=Get-Content -Raw -LiteralPath $packagePath|ConvertFrom-Json
         return $package.name -eq [string]$RuntimeLock.opencode.npm_package -and $package.version -eq $OpenCodeVersion
