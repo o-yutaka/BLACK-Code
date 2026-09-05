@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "opencode": {
+    "npm_package": "opencode-ai",
+    "version": "1.18.28"
+  },
+  "llama_cpp": {
+    "semantic_release": "v0.4.0",
+    "binary_tag": "b10809",
+    "target_commit": "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
+    "cuda": "12.4",
+    "windows_x64_main": {
+      "file": "llama-b10809-bin-win-cuda-12.4-x64.zip",
+      "sha256": "c77bfcd9ed8d91e8721a2d6a290b907fddd4fa5412a47b21c6fa1709116b85f9",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/llama-b10809-bin-win-cuda-12.4-x64.zip"
+    },
+    "windows_x64_cudart": {
+      "file": "cudart-llama-bin-win-cuda-12.4-x64.zip",
+      "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10809/cudart-llama-bin-win-cuda-12.4-x64.zip"
+    }
+  }
+}

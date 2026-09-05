@@ -7,15 +7,26 @@ function Get-BlackCodeIndexHash([string]$Text) {
         $hash = $sha.ComputeHash($bytes)
         return ([System.BitConverter]::ToString($hash)).Replace("-", "").ToLowerInvariant()
     }
-    finally {
-        $sha.Dispose()
-    }
+    finally { $sha.Dispose() }
 }
 
 function Get-BlackCodeGitCommand {
     $git = Get-Command "git.exe" -ErrorAction SilentlyContinue
     if (-not $git) { $git = Get-Command "git" -ErrorAction SilentlyContinue }
     return $git
+}
+
+function Normalize-BlackCodePath([object]$Value) {
+    if ($null -eq $Value) { return $null }
+    $text = ([string]$Value).Trim()
+    if (-not $text) { return $null }
+    return $text.Replace('\\','/')
+}
+
+function Invoke-BlackCodeGitLines([object]$Git,[string]$Root,[string[]]$GitArgs) {
+    $rows = @(& $Git.Source -C $Root @GitArgs 2>$null)
+    if ($LASTEXITCODE -ne 0) { return @() }
+    return @($rows | ForEach-Object { Normalize-BlackCodePath $_ } | Where-Object { $_ } | Sort-Object -Unique)
 }
 
 function Get-BlackCodeRepoIndex(
@@ -32,12 +43,14 @@ function Get-BlackCodeRepoIndex(
     $git = Get-BlackCodeGitCommand
     if (-not $git) {
         $fallback = [ordered]@{
-            schema_version = "1.0"
+            schema_version = "2.0"
             project_root = $resolved
             cache_status = "NO_GIT"
             git_head = $null
             tracked_file_count = $null
+            untracked_file_count = $null
             changed_files = @()
+            untracked_files = @()
             package_roots = @()
             test_files = @()
             likely_tests = @()
@@ -55,44 +68,46 @@ function Get-BlackCodeRepoIndex(
         try { $cached = Get-Content -Raw -LiteralPath $indexPath | ConvertFrom-Json -AsHashtable } catch {}
     }
 
-    $working = @(& $git.Source -C $resolved status --porcelain=v1 -uno 2>$null)
-    $dirtyFiles = @($working | ForEach-Object {
-        $line = [string]$_
-        if ($line.Length -ge 4) { $line.Substring(3).Trim() }
-    } | Where-Object { $_ } | Sort-Object -Unique)
+    # Do not use `git status -uno`: new files are first-class BLACK Code delta.
+    # `git diff HEAD` covers staged + unstaged tracked changes; ls-files covers untracked.
+    $trackedWorkingDelta = if ($head) {
+        @(Invoke-BlackCodeGitLines $git $resolved @("diff","--name-only","HEAD","--","."))
+    } else { @() }
+    $untrackedFiles = @(Invoke-BlackCodeGitLines $git $resolved @("ls-files","--others","--exclude-standard"))
 
     $sameHead = $cached -and $cached.git_head -and $head -and ($cached.git_head -eq $head)
-    $cleanReuse = $sameHead -and $dirtyFiles.Count -eq 0
+    $cleanReuse = $sameHead -and @($trackedWorkingDelta).Count -eq 0 -and @($untrackedFiles).Count -eq 0
 
     if ($cleanReuse) {
         $cached.cache_status = "HIT"
         $cached.last_used_at = (Get-Date).ToString("o")
+        if (-not $cached.ContainsKey("untracked_files")) { $cached["untracked_files"] = @() }
+        if (-not $cached.ContainsKey("untracked_file_count")) { $cached["untracked_file_count"] = 0 }
         $cached | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 $indexPath
         return [ordered]@{ index = $cached; index_path = $indexPath; context_path = $contextPath }
     }
 
-    $tracked = @(& $git.Source -C $resolved ls-files 2>$null)
-    if ($LASTEXITCODE -ne 0) { $tracked = @() }
-    $tracked = @($tracked | ForEach-Object { ([string]$_).Replace('\','/') } | Where-Object { $_ } | Sort-Object -Unique)
+    $tracked = @(Invoke-BlackCodeGitLines $git $resolved @("ls-files"))
+    $currentFiles = @(@($tracked) + @($untrackedFiles) | Sort-Object -Unique)
 
-    $packageRoots = @($tracked | Where-Object {
-        $_ -match '(^|/)(package\.json|pyproject\.toml|Cargo\.toml|go\.mod)$'
+    $packageRoots = @($currentFiles | Where-Object {
+        $_ -match '(^|/)(package\.json|pyproject\.toml|Cargo\.toml|go\.mod|Directory\.Build\.props|[^/]+\.sln)$'
     } | ForEach-Object {
         $parent = Split-Path -Parent $_
-        if ([string]::IsNullOrWhiteSpace($parent)) { "." } else { $parent.Replace('\','/') }
+        if ([string]::IsNullOrWhiteSpace($parent)) { "." } else { $parent.Replace('\\','/') }
     } | Sort-Object -Unique)
 
-    $testFiles = @($tracked | Where-Object {
-        $_ -match '(^|/)(__tests__|tests?|specs?)(/|$)' -or $_ -match '(\.test\.|\.spec\.|_test\.)'
+    $testFiles = @($currentFiles | Where-Object {
+        $_ -match '(^|/)(__tests__|tests?|specs?)(/|$)' -or $_ -match '(\.test\.|\.spec\.|_test\.|Tests?\.)'
     } | Sort-Object -Unique)
 
     $changed = [System.Collections.Generic.List[string]]::new()
-    foreach ($f in $dirtyFiles) { if ($f) { [void]$changed.Add($f.Replace('\','/')) } }
+    foreach ($f in @($trackedWorkingDelta)) { if ($f) { [void]$changed.Add($f) } }
+    foreach ($f in @($untrackedFiles)) { if ($f) { [void]$changed.Add($f) } }
+
     if ($cached -and $cached.git_head -and $head -and $cached.git_head -ne $head) {
-        $committedDelta = @(& $git.Source -C $resolved diff --name-only $cached.git_head $head 2>$null)
-        if ($LASTEXITCODE -eq 0) {
-            foreach ($f in $committedDelta) { if ($f) { [void]$changed.Add(([string]$f).Replace('\','/')) } }
-        }
+        $committedDelta = @(Invoke-BlackCodeGitLines $git $resolved @("diff","--name-only",$cached.git_head,$head,"--","."))
+        foreach ($f in @($committedDelta)) { if ($f) { [void]$changed.Add($f) } }
     }
     $changedFiles = @($changed | Sort-Object -Unique)
 
@@ -100,28 +115,40 @@ function Get-BlackCodeRepoIndex(
     foreach ($changedFile in $changedFiles) {
         $stem = [IO.Path]::GetFileNameWithoutExtension($changedFile)
         if (-not $stem) { continue }
+        $changedDir = (Split-Path -Parent $changedFile).Replace('\\','/')
         foreach ($testFile in $testFiles) {
             $testName = [IO.Path]::GetFileNameWithoutExtension($testFile)
+            $testDir = (Split-Path -Parent $testFile).Replace('\\','/')
             $sameStem = $testName -like "$stem*" -or $stem -like "$testName*"
-            $sameDir = (Split-Path -Parent $testFile) -eq (Split-Path -Parent $changedFile)
-            if ($sameStem -or $sameDir) { [void]$likely.Add($testFile) }
+            $sameDir = $testDir -eq $changedDir
+            $samePackage = $false
+            foreach ($root in $packageRoots) {
+                if ($root -eq ".") { continue }
+                $prefix = $root.TrimEnd('/') + '/'
+                if ($changedFile.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) -and $testFile.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) {
+                    $samePackage = $true; break
+                }
+            }
+            if ($sameStem -or $sameDir -or $samePackage) { [void]$likely.Add($testFile) }
         }
     }
-    $likelyTests = @($likely | Sort-Object -Unique | Select-Object -First 40)
+    $likelyTests = @($likely | Sort-Object -Unique | Select-Object -First 80)
 
     $record = [ordered]@{
-        schema_version = "1.0"
+        schema_version = "2.0"
         project_root = $resolved
         generated_at = (Get-Date).ToString("o")
         last_used_at = (Get-Date).ToString("o")
         cache_status = if ($cached) { "DELTA_REFRESH" } else { "MISS_BUILD" }
         git_head = $head
         previous_git_head = if ($cached) { $cached.git_head } else { $null }
-        tracked_file_count = $tracked.Count
+        tracked_file_count = @($tracked).Count
+        untracked_file_count = @($untrackedFiles).Count
         changed_files = $changedFiles
+        untracked_files = @($untrackedFiles | Select-Object -First 200)
         package_roots = $packageRoots
-        test_file_count = $testFiles.Count
-        test_files = @($testFiles | Select-Object -First 200)
+        test_file_count = @($testFiles).Count
+        test_files = @($testFiles | Select-Object -First 400)
         likely_tests = $likelyTests
     }
     $record | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 $indexPath
@@ -129,15 +156,16 @@ function Get-BlackCodeRepoIndex(
     $lines = [System.Collections.Generic.List[string]]::new()
     [void]$lines.Add("# BLACK Code Repo Delta Context")
     [void]$lines.Add("")
-    [void]$lines.Add("Use this persistent index before re-discovering repository structure. Re-read files only when the task or changed paths require it.")
+    [void]$lines.Add("Use this persistent index before re-discovering repository structure. New/untracked files are first-class delta and must not be ignored.")
     [void]$lines.Add("")
     [void]$lines.Add("- Cache: $($record.cache_status)")
     [void]$lines.Add("- Git HEAD: $head")
     [void]$lines.Add("- Tracked files: $($record.tracked_file_count)")
+    [void]$lines.Add("- Untracked files: $($record.untracked_file_count)")
     [void]$lines.Add("- Package roots: $([string]::Join(', ', @($packageRoots | Select-Object -First 30)))")
     [void]$lines.Add("")
     [void]$lines.Add("## Changed paths")
-    if ($changedFiles.Count -eq 0) { [void]$lines.Add("- none detected") } else { foreach ($f in @($changedFiles | Select-Object -First 80)) { [void]$lines.Add("- $f") } }
+    if ($changedFiles.Count -eq 0) { [void]$lines.Add("- none detected") } else { foreach ($f in @($changedFiles | Select-Object -First 120)) { [void]$lines.Add("- $f") } }
     [void]$lines.Add("")
     [void]$lines.Add("## Likely affected tests")
     if ($likelyTests.Count -eq 0) { [void]$lines.Add("- none precomputed; infer from changed package only if needed") } else { foreach ($f in $likelyTests) { [void]$lines.Add("- $f") } }

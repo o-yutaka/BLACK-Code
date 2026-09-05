@@ -19,8 +19,11 @@ $DownloadDir = Join-Path $RuntimeDir "downloads"
 $LogDir = Join-Path $RuntimeDir "logs"
 
 $ModelLockPath = Join-Path $PSScriptRoot "model-7.27.lock.json"
+$RuntimeLockPath = Join-Path $PSScriptRoot "runtime.lock.json"
 if (-not (Test-Path -LiteralPath $ModelLockPath)) { throw "model-7.27.lock.json is missing." }
+if (-not (Test-Path -LiteralPath $RuntimeLockPath)) { throw "runtime.lock.json is missing." }
 $ModelLock = Get-Content -Raw -LiteralPath $ModelLockPath | ConvertFrom-Json
+$RuntimeLock = Get-Content -Raw -LiteralPath $RuntimeLockPath | ConvertFrom-Json
 $ModelFile = [string]$ModelLock.canonical_model.file
 $ModelPath = Join-Path $ModelDir $ModelFile
 $ModelManifestPath = Join-Path $ModelDir "model-7.27.local.json"
@@ -28,6 +31,11 @@ $DraftFile = [string]$ModelLock.mtp_draft.file
 $DraftPath = Join-Path $ModelDir $DraftFile
 $DraftUrl = "https://huggingface.co/$($ModelLock.mtp_draft.repo)/resolve/$($ModelLock.mtp_draft.revision)/$DraftFile?download=true"
 $DraftSha256 = [string]$ModelLock.mtp_draft.sha256
+$OpenCodeVersion = [string]$RuntimeLock.opencode.version
+$LlamaTag = [string]$RuntimeLock.llama_cpp.binary_tag
+$LlamaCommit = [string]$RuntimeLock.llama_cpp.target_commit
+$LlamaMain = $RuntimeLock.llama_cpp.windows_x64_main
+$LlamaCuda = $RuntimeLock.llama_cpp.windows_x64_cudart
 $LegacyModelPaths = @(
     (Join-Path $ModelDir "Qwen3.8-27B-Uncensored-IQ2_M.gguf"),
     (Join-Path $ModelDir "Qwen3.8-27B-Uncensored-IQ4_XS.gguf")
@@ -53,6 +61,16 @@ function Download-File([string]$Url,[string]$Destination){
     try{$curlPath=(Get-Command "curl.exe" -ErrorAction Stop).Source;$curlProcess=Start-Process -FilePath $curlPath -ArgumentList $curlArgs -Wait -PassThru -RedirectStandardOutput $curlStdout -RedirectStandardError $curlStderr;if($curlProcess.ExitCode -ne 0){$detail=(Get-Content -Raw -Path $curlStderr -ErrorAction SilentlyContinue).Trim();throw "curl failed with exit code $($curlProcess.ExitCode): $detail"}}finally{Remove-Item -Force -ErrorAction SilentlyContinue $curlStdout,$curlStderr}
     if(-not(Test-Path -LiteralPath $partial)){throw "curl completed without creating the partial download: $partial"};Move-Item -Force $partial $Destination
 }
+function Test-FileSha([string]$Path,[string]$Expected) {
+    if(-not(Test-Path -LiteralPath $Path)){return $false}
+    return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant() -eq $Expected.ToLowerInvariant()
+}
+function Ensure-PinnedDownload([string]$Url,[string]$Destination,[string]$ExpectedSha) {
+    if(Test-FileSha $Destination $ExpectedSha){return}
+    if(Test-Path -LiteralPath $Destination){Move-Item -Force $Destination "$Destination.invalid"}
+    Download-File $Url $Destination
+    if(-not(Test-FileSha $Destination $ExpectedSha)){throw "Pinned download SHA mismatch: $Destination"}
+}
 function Test-Gguf([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
     $stream=[IO.File]::OpenRead($Path)
@@ -74,33 +92,64 @@ function Test-Draft {
     if ((Get-Item -LiteralPath $DraftPath).Length -lt [int64]$ModelLock.mtp_draft.minimum_bytes) { return $false }
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $DraftPath).Hash.ToLowerInvariant() -eq $DraftSha256.ToLowerInvariant()
 }
+function Get-OpenCodeVersion {
+    $oc=Get-Command "opencode" -ErrorAction SilentlyContinue
+    if(-not $oc){return $null}
+    try{return ((& $oc.Source --version 2>$null | Select-Object -First 1).ToString().Trim())}catch{return $null}
+}
+function Test-LlamaPinned([string]$ServerExe,[string]$QuantizeExe) {
+    if(-not(Test-Path -LiteralPath $ServerExe) -or -not(Test-Path -LiteralPath $QuantizeExe)){return $false}
+    try {
+        $text=((& $ServerExe --version 2>&1)|Out-String)
+        $commitPrefix=$LlamaCommit.Substring(0,8)
+        return $text -match [regex]::Escape($LlamaTag) -or $text -match [regex]::Escape($commitPrefix) -or $text -match '(?i)build\s+10809'
+    } catch { return $false }
+}
 
 if($env:OS -ne "Windows_NT"){throw "This runtime is for Windows."}
 New-Item -ItemType Directory -Force -Path $RuntimeDir,$LauncherDir,$BinDir,$LlamaDir,$ModelDir,$DownloadDir,$LogDir|Out-Null
 Write-Step "Checking NVIDIA GPU";Require-Command "nvidia-smi.exe" "Install or update the NVIDIA driver first.";$gpuInfo=Invoke-NvidiaSmi "name,memory.total";Write-Host $gpuInfo
 Write-Step "Checking curl / Node / Python / Git";Require-Command "curl.exe" "Windows 10/11 normally includes curl.exe.";Require-Command "node.exe" "Install Node.js LTS.";Require-Command "python.exe" "Install Python 3.";Require-Command "git.exe" "Install Git for Windows."
-Write-Step "Installing OpenCode if needed";Refresh-Path
-if(-not(Get-Command "opencode" -ErrorAction SilentlyContinue)){
-    if(-not(Get-Command "npm.cmd" -ErrorAction SilentlyContinue)){$winget=Get-Command "winget.exe" -ErrorAction SilentlyContinue;if(-not $winget){throw "Neither npm nor winget is available. Install Node.js LTS and run setup again."};& winget.exe install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements --silent;if($LASTEXITCODE -ne 0){throw "Node.js installation failed with exit code $LASTEXITCODE"};Refresh-Path}
-    Require-Command "npm.cmd" "Node.js/npm is not visible in PATH.";& npm.cmd install -g opencode-ai;if($LASTEXITCODE -ne 0){throw "OpenCode installation failed with exit code $LASTEXITCODE"};Refresh-Path
+
+Write-Step "Enforcing pinned OpenCode $OpenCodeVersion";Refresh-Path
+if(-not(Get-Command "npm.cmd" -ErrorAction SilentlyContinue)){
+    $winget=Get-Command "winget.exe" -ErrorAction SilentlyContinue
+    if(-not $winget){throw "Neither npm nor winget is available. Install Node.js LTS and run setup again."}
+    & winget.exe install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements --silent
+    if($LASTEXITCODE -ne 0){throw "Node.js installation failed with exit code $LASTEXITCODE"}
+    Refresh-Path
+}
+Require-Command "npm.cmd" "Node.js/npm is not visible in PATH."
+if((Get-OpenCodeVersion) -ne $OpenCodeVersion){
+    & npm.cmd install -g ("opencode-ai@"+$OpenCodeVersion)
+    if($LASTEXITCODE -ne 0){throw "Pinned OpenCode installation failed with exit code $LASTEXITCODE"}
+    Refresh-Path
 }
 Require-Command "opencode" "OpenCode was not found after installation."
+$actualOpenCodeVersion=Get-OpenCodeVersion
+if($actualOpenCodeVersion -ne $OpenCodeVersion){throw "OpenCode version mismatch. Expected $OpenCodeVersion, got $actualOpenCodeVersion"}
+Write-Host "OpenCode PIN VERIFIED: $actualOpenCodeVersion" -ForegroundColor Green
 
-Write-Step "Installing llama.cpp Windows CUDA build"
+Write-Step "Enforcing pinned llama.cpp $LlamaTag / CUDA $($RuntimeLock.llama_cpp.cuda)"
 $ServerExe=Join-Path $LlamaDir "llama-server.exe"
 $QuantizeExe=Join-Path $LlamaDir "llama-quantize.exe"
-if($Force -or $ForceLlama -or -not(Test-Path $ServerExe) -or -not(Test-Path $QuantizeExe)){
-    $releases=Invoke-RestMethod -Headers @{"User-Agent"="BLACK-Code-Setup"} -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20";$picked=$null
-    foreach($release in $releases){$main=$release.assets|Where-Object{$_.name -match '^llama-b.*-bin-win-cuda-12\.4-x64\.zip$'}|Select-Object -First 1;$cudart=$release.assets|Where-Object{$_.name -eq 'cudart-llama-bin-win-cuda-12.4-x64.zip'}|Select-Object -First 1;if($main -and $cudart){$picked=[PSCustomObject]@{tag=$release.tag_name;main=$main;cudart=$cudart};break}}
-    if(-not $picked){throw "Could not find a recent llama.cpp Windows CUDA 12.4 release."};Write-Host "llama.cpp release: $($picked.tag)"
-    $mainZip=Join-Path $DownloadDir $picked.main.name;$cudaZip=Join-Path $DownloadDir $picked.cudart.name
-    if($Force -or $ForceLlama -or -not(Test-Path $mainZip)){Download-File $picked.main.browser_download_url $mainZip};if($Force -or $ForceLlama -or -not(Test-Path $cudaZip)){Download-File $picked.cudart.browser_download_url $cudaZip}
+if($Force -or $ForceLlama -or -not(Test-LlamaPinned $ServerExe $QuantizeExe)){
+    $mainZip=Join-Path $DownloadDir ([string]$LlamaMain.file)
+    $cudaZip=Join-Path $DownloadDir ([string]$LlamaCuda.file)
+    if($Force -or $ForceLlama){Remove-Item -Force -ErrorAction SilentlyContinue $mainZip,$cudaZip}
+    Ensure-PinnedDownload ([string]$LlamaMain.url) $mainZip ([string]$LlamaMain.sha256)
+    Ensure-PinnedDownload ([string]$LlamaCuda.url) $cudaZip ([string]$LlamaCuda.sha256)
     $stage=Join-Path $RuntimeDir "llama-stage";if(Test-Path $stage){Remove-Item -Recurse -Force $stage};New-Item -ItemType Directory -Force -Path (Join-Path $stage "main"),(Join-Path $stage "cuda")|Out-Null
     Expand-Archive -Force -Path $mainZip -DestinationPath (Join-Path $stage "main");Expand-Archive -Force -Path $cudaZip -DestinationPath (Join-Path $stage "cuda")
-    $foundServer=Get-ChildItem (Join-Path $stage "main") -Recurse -Filter "llama-server.exe"|Select-Object -First 1;if(-not $foundServer){throw "llama-server.exe was not found in the downloaded archive."}
-    Get-ChildItem $LlamaDir -Force -ErrorAction SilentlyContinue|Remove-Item -Recurse -Force;Copy-Item -Path (Join-Path $foundServer.Directory.FullName "*") -Destination $LlamaDir -Recurse -Force;Get-ChildItem (Join-Path $stage "cuda") -Recurse -File|ForEach-Object{Copy-Item -Force $_.FullName (Join-Path $LlamaDir $_.Name)};Remove-Item -Recurse -Force $stage
+    $foundServer=Get-ChildItem (Join-Path $stage "main") -Recurse -Filter "llama-server.exe"|Select-Object -First 1;if(-not $foundServer){throw "llama-server.exe was not found in the pinned archive."}
+    Get-ChildItem $LlamaDir -Force -ErrorAction SilentlyContinue|Remove-Item -Recurse -Force
+    Copy-Item -Path (Join-Path $foundServer.Directory.FullName "*") -Destination $LlamaDir -Recurse -Force
+    Get-ChildItem (Join-Path $stage "cuda") -Recurse -File|ForEach-Object{Copy-Item -Force $_.FullName (Join-Path $LlamaDir $_.Name)}
+    Remove-Item -Recurse -Force $stage
 }
-if(-not(Test-Path $ServerExe) -or -not(Test-Path $QuantizeExe)){throw "llama.cpp installation did not include server + quantizer."};& $ServerExe --version;if($LASTEXITCODE -ne 0){throw "llama-server.exe exists but failed to run."}
+if(-not(Test-LlamaPinned $ServerExe $QuantizeExe)){throw "llama.cpp install does not match runtime.lock.json ($LlamaTag / $LlamaCommit)."}
+$llamaVersionText=((& $ServerExe --version 2>&1)|Out-String).Trim()
+Write-Host "llama.cpp PIN VERIFIED: $LlamaTag" -ForegroundColor Green
 
 $hfDownloader=Join-Path $PSScriptRoot "hf-parallel-download.ps1"
 if(-not(Test-Path -LiteralPath $hfDownloader)){throw "hf-parallel-download.ps1 is missing from BLACK Code runtime."}
@@ -130,7 +179,7 @@ Write-Host "MTP draft HASH VERIFIED: $DraftFile" -ForegroundColor Green
 foreach($legacy in $LegacyModelPaths){if(Test-Path -LiteralPath $legacy){Remove-Item -Force $legacy;Write-Host "Removed superseded model: $legacy"}}
 
 Write-Step "Installing BLACK Code launcher"
-$launcherFiles=@("black-code.ps1","setup.ps1","doctor.ps1","execution-fabric.ps1","repo-index.ps1","rule-bridge.ps1","verification-gate.ps1","hf-parallel-download.ps1","build-model-7.27.ps1","extract-quant-map.mjs","model-7.27.lock.json","black-code-execution.md","analyze-bottleneck.ps1","opencode-telemetry.js","opencode-governor.js","verify.ps1")
+$launcherFiles=@("black-code.ps1","setup.ps1","doctor.ps1","execution-fabric.ps1","repo-index.ps1","rule-bridge.ps1","verification-gate.ps1","hf-parallel-download.ps1","build-model-7.27.ps1","extract-quant-map.mjs","model-7.27.lock.json","runtime.lock.json","black-code-execution.md","analyze-bottleneck.ps1","opencode-telemetry.js","opencode-governor.js","verify.ps1")
 foreach($name in $launcherFiles){$source=Join-Path $PSScriptRoot $name;if(-not(Test-Path $source)){throw "Required runtime source missing: $source"};Copy-Item -Force $source (Join-Path $LauncherDir $name)}
 
 $globalPluginDir=Join-Path $env:USERPROFILE ".config\opencode\plugins"
@@ -142,7 +191,13 @@ $userPath=[Environment]::GetEnvironmentVariable("Path","User");if([string]::IsNu
 
 $state=[ordered]@{
     installed_at=(Get-Date).ToString("o")
-    canonical_runtime="opencode-llama-governed-v4-black-7.27"
+    canonical_runtime="opencode-llama-governed-v5-black-7.27"
+    runtime_lock="runtime.lock.json"
+    opencode_version=$OpenCodeVersion
+    llama_release=[string]$RuntimeLock.llama_cpp.semantic_release
+    llama_binary_tag=$LlamaTag
+    llama_commit=$LlamaCommit
+    llama_version=$llamaVersionText
     model=$ModelFile
     model_sha256=$modelManifest.model_sha256
     model_path=$ModelPath
@@ -157,9 +212,9 @@ $state=[ordered]@{
     llama_server=$ServerExe
     gpu=($gpuInfo -join "; ")
     execution_fabric="black-execution-fabric-governed-v3"
-    repo_index="persistent-delta-v1"
+    repo_index="persistent-delta-v2-untracked"
     rule_bridge="claude-black-compatible-v1"
-    completion_governor="hash-bound-v2"
+    completion_governor="workspace-runtime-bound-v3"
     final_verifier="governed-final-v2"
     bottleneck_analyzer="observation-only-v1"
     quantization="BLACK-UD-IQ2_XXS-exact-reference-map"
