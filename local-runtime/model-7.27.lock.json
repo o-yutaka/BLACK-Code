@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "canonical_model": {
     "file": "Qwen3.8-27B-Uncensored-BLACK-UD-IQ2_XXS.gguf",
     "alias": "qwen3.8-27b-uncensored-black-7.27",
@@ -32,11 +32,16 @@
     "sha256": "f3ac2acd205b2f9acc1b027b67867f4ba1cf84761d226024a3b153345a69e127",
     "minimum_bytes": 1600000000
   },
+  "llama_cpp_conversion_source": {
+    "repo": "https://github.com/ggml-org/llama.cpp.git",
+    "revision": "4d9176092d00586775af140581bb0b558ddc4389",
+    "required_quantizer_flag": "--tensor-type-file"
+  },
   "quantization": {
     "base_type": "IQ2_XXS",
     "requires_imatrix": true,
     "requires_tensor_type_file": true,
     "map_policy": "exact tensor dtype map copied from the pinned Unsloth 7.27 GB reference onto the pinned uncensored parent",
-    "fallback_for_unmapped_tensor": "reject"
+    "fallback_for_unmapped_tensor": "reject-by-name-inventory-before-quantization"
   }
 }
