@@ -13,7 +13,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $global:LASTEXITCODE = 0
 
-if ($env:OS -ne "Windows_NT") { throw "setup-resumable-7.27.ps1 must run in Windows PowerShell, not WSL/Linux." }
+$NativeGuard = Join-Path $PSScriptRoot "assert-native-windows.ps1"
+if (-not (Test-Path -LiteralPath $NativeGuard)) { throw "assert-native-windows.ps1 is missing." }
+. $NativeGuard -Quiet
 
 $Setup = Join-Path $PSScriptRoot "setup.ps1"
 $Prepare = Join-Path $PSScriptRoot "prepare-parent-7.27.ps1"
