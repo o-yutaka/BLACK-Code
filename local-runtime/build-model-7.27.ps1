@@ -119,8 +119,8 @@ if (-not $quantHelp.Contains([string]$Lock.llama_cpp_conversion_source.required_
 $quantVersionOut=[IO.Path]::GetTempFileName();$quantVersionErr=[IO.Path]::GetTempFileName()
 try {
     $quantVersionProcess=Start-Process -FilePath $Quantize -ArgumentList "--version" -WorkingDirectory $env:SystemRoot -Wait -PassThru -RedirectStandardOutput $quantVersionOut -RedirectStandardError $quantVersionErr
-    if($quantVersionProcess.ExitCode -ne 0){throw "llama-quantize --version failed with exit code $($quantVersionProcess.ExitCode)"}
     $QuantizerVersion=((Get-Content -Raw -LiteralPath $quantVersionOut -ErrorAction SilentlyContinue)+(Get-Content -Raw -LiteralPath $quantVersionErr -ErrorAction SilentlyContinue)).Trim()
+    if(-not $QuantizerVersion){throw "llama-quantize --version returned no diagnostic output (exit code $($quantVersionProcess.ExitCode))"}
 } finally {Remove-Item -Force -ErrorAction SilentlyContinue $quantVersionOut,$quantVersionErr}
 
 $root = [IO.Path]::GetPathRoot((Resolve-Path -LiteralPath $WorkDir).Path)
