@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "canonical_model": {
+    "file": "Qwen3.8-27B-Uncensored-BLACK-UD-IQ2_XXS.gguf",
+    "alias": "qwen3.8-27b-uncensored-black-7.27",
+    "no_mtp": true,
+    "vision": false,
+    "target_min_bytes": 7200000000,
+    "target_max_bytes": 7350000000
+  },
+  "uncensored_parent": {
+    "repo": "JonathanColetti/Qwen3.8-27B-Uncensored",
+    "revision": "5bb7aa90f0efef548e87005b1fb7658e522b6b7f"
+  },
+  "quant_map_reference": {
+    "repo": "unsloth/Qwen3.8-27B-GGUF",
+    "revision": "313447f257f7ebde0b968e4778feef774546ed81",
+    "file": "Qwen3.8-27B-UD-IQ2_XXS.gguf",
+    "sha256": "e792d8fb3142fe6d9171876d6da0f71f05a71028718debc72dbec93ff645e67d",
+    "published_size_bytes": 7270000000
+  },
+  "imatrix": {
+    "repo": "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF",
+    "revision": "798b362775a31685b25a10d0cada703a76757fe5",
+    "file": "Qwen3.8-27B-Uncensored-imatrix.dat",
+    "sha256": "3e85d5a338133e9c975da92c009cf3bbcb42557fbafc45fc33c9dc3e537ba240"
+  },
+  "mtp_draft": {
+    "repo": "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF",
+    "revision": "main",
+    "file": "Qwen3.8-27B-Uncensored-draft-Q4_0.gguf",
+    "sha256": "f3ac2acd205b2f9acc1b027b67867f4ba1cf84761d226024a3b153345a69e127",
+    "minimum_bytes": 1600000000
+  },
+  "quantization": {
+    "base_type": "IQ2_XXS",
+    "requires_imatrix": true,
+    "requires_tensor_type_file": true,
+    "map_policy": "exact tensor dtype map copied from the pinned Unsloth 7.27 GB reference onto the pinned uncensored parent",
+    "fallback_for_unmapped_tensor": "reject"
+  }
+}
