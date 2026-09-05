@@ -6,8 +6,11 @@ $RuntimeDir = Join-Path $InstallBase "runtime"
 $LauncherDir = Join-Path $InstallBase "launcher"
 $Server = Join-Path $RuntimeDir "llama\llama-server.exe"
 $LockPath = Join-Path $LauncherDir "model-7.27.lock.json"
+$RuntimeLockPath = Join-Path $LauncherDir "runtime.lock.json"
 if (-not (Test-Path -LiteralPath $LockPath)) { Write-Host "FAIL: model-7.27.lock.json missing" -ForegroundColor Red; exit 2 }
+if (-not (Test-Path -LiteralPath $RuntimeLockPath)) { Write-Host "FAIL: runtime.lock.json missing" -ForegroundColor Red; exit 2 }
 $Lock = Get-Content -Raw -LiteralPath $LockPath | ConvertFrom-Json
+$RuntimeLock = Get-Content -Raw -LiteralPath $RuntimeLockPath | ConvertFrom-Json
 $Model = Join-Path $RuntimeDir ("models\" + [string]$Lock.canonical_model.file)
 $ManifestPath = Join-Path $RuntimeDir "models\model-7.27.local.json"
 $Draft = Join-Path $RuntimeDir ("models\" + [string]$Lock.mtp_draft.file)
@@ -31,9 +34,14 @@ Write-Host "`n[RAM]"
 try { $ram = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB; Write-Host ("{0:N1} GiB" -f $ram) }
 catch { Fail "RAM query failed: $($_.Exception.Message)" }
 
-Write-Host "`n[llama.cpp]"
-if (Test-Path $Server) { & $Server --version; if ($LASTEXITCODE -ne 0) { Fail "llama-server.exe failed to run" } }
-else { Fail "llama-server.exe missing" }
+Write-Host "`n[llama.cpp pinned runtime]"
+if (Test-Path $Server) {
+    $llamaText=((& $Server --version 2>&1)|Out-String).Trim();Write-Host $llamaText
+    $tag=[string]$RuntimeLock.llama_cpp.binary_tag;$prefix=([string]$RuntimeLock.llama_cpp.target_commit).Substring(0,8)
+    if($LASTEXITCODE -ne 0){Fail "llama-server.exe failed to run"}
+    elseif($llamaText -notmatch [regex]::Escape($tag) -and $llamaText -notmatch [regex]::Escape($prefix) -and $llamaText -notmatch '(?i)build\s+10809'){Fail "llama.cpp is not the pinned $tag runtime"}
+    else{Write-Host "llama.cpp PIN VERIFIED: $tag" -ForegroundColor Green}
+} else { Fail "llama-server.exe missing" }
 
 Write-Host "`n[Canonical BLACK 7.27 model]"
 if (-not (Test-Gguf $Model)) { Fail "canonical GGUF missing or invalid: $Model" }
@@ -63,13 +71,17 @@ else {
     else { Fail "MTP draft hash mismatch" }
 }
 
-Write-Host "`n[OpenCode]"
+Write-Host "`n[OpenCode pinned runtime]"
 $oc = Get-Command opencode -ErrorAction SilentlyContinue
-if ($oc) { & $oc.Source --version; if ($LASTEXITCODE -ne 0) { Fail "opencode failed to run" } }
-else { Fail "opencode missing" }
+if ($oc) {
+    $version=((& $oc.Source --version 2>$null)|Select-Object -First 1).ToString().Trim();Write-Host $version
+    if($LASTEXITCODE -ne 0){Fail "opencode failed to run"}
+    elseif($version -ne [string]$RuntimeLock.opencode.version){Fail "OpenCode version mismatch: expected $($RuntimeLock.opencode.version), got $version"}
+    else{Write-Host "OpenCode PIN VERIFIED: $version" -ForegroundColor Green}
+} else { Fail "opencode missing" }
 
 Write-Host "`n[Governed runtime]"
-$required = @("opencode-governor.js","opencode-telemetry.js","verification-gate.ps1","rule-bridge.ps1","repo-index.ps1","hf-parallel-download.ps1","build-model-7.27.ps1","extract-quant-map.mjs","model-7.27.lock.json")
+$required = @("opencode-governor.js","opencode-telemetry.js","verification-gate.ps1","rule-bridge.ps1","repo-index.ps1","hf-parallel-download.ps1","build-model-7.27.ps1","extract-quant-map.mjs","model-7.27.lock.json","runtime.lock.json")
 foreach ($name in $required) {
     $path = Join-Path $LauncherDir $name
     if (Test-Path $path) { Write-Host "OK: $name" -ForegroundColor Green }
@@ -81,8 +93,14 @@ else { Fail "black-code-verify shim missing from PATH" }
 
 Write-Host "`n[Canonical state]"
 $statePath = Join-Path $RuntimeDir "state.json"
-if (Test-Path $statePath) { Get-Content -Raw -LiteralPath $statePath }
-else { Fail "state.json missing; run setup.ps1" }
+if (Test-Path $statePath) {
+    $state=Get-Content -Raw -LiteralPath $statePath|ConvertFrom-Json
+    $state|ConvertTo-Json -Depth 8
+    if($state.opencode_version -ne [string]$RuntimeLock.opencode.version){Fail "state OpenCode pin mismatch"}
+    if($state.llama_binary_tag -ne [string]$RuntimeLock.llama_cpp.binary_tag){Fail "state llama.cpp pin mismatch"}
+    if($state.repo_index -ne "persistent-delta-v2-untracked"){Fail "state repo index version mismatch"}
+    if($state.completion_governor -ne "workspace-runtime-bound-v3"){Fail "state governor version mismatch"}
+} else { Fail "state.json missing; run setup.ps1" }
 
 if ($Failed) { exit 1 }
 Write-Host "`nBLACK CODE DOCTOR PASS" -ForegroundColor Green
