@@ -1,51 +1,81 @@
 # BLACK Code
 
-Self-evolving autonomous system with:
+BLACK Code is the local coding-agent/runtime side of the BLACK ecosystem. It stays independent from BLACK itself and can later export verified coding knowledge/experience into BLACK's Code Knowledge capability.
 
-- Task generation
-- Failure avoidance
-- Score optimization loop
+## Canonical runtime
 
-## Local coding runtime — Qwen3.8-27B Uncensored
+```text
+OpenCode TUI
+  -> repo delta index + project rules
+  -> local Qwen3.8-27B Uncensored / llama.cpp CUDA
+  -> project-local tools
+  -> affected verification
+  -> black-code-verify
+  -> workspace-hash-bound completion governor
+  -> telemetry / bottleneck / evidence
+```
 
-BLACK Code's canonical Windows local coding runtime uses:
+Canonical Windows hardware target: RTX 3060 12 GB / 32 GB RAM.
+
+Current verified model baseline:
 
 - **Qwen3.8-27B-Uncensored IQ2_M** (~10.6 GB)
-- llama.cpp CUDA
-- OpenCode as the coding-agent interface
-- autonomous project-local editing and shell commands
-- BLACK-derived execution optimization without importing or modifying BLACK itself
+- fused MTP, draft max 2
+- local model parallel slots = 1
+- auto context = 8K / 12K / 16K by repository size
+- KV q8_0/q8_0
+- thinking off
+- vision off
 
-The model and runtime binaries live outside Git under `%LOCALAPPDATA%\BLACK-Code\runtime`.
+The planned ~7.27 GB uncensored model remains a candidate until a real GGUF is built and passes the same code-quality, uncensored-regression, VRAM and verified-task-latency gates. BLACK Code does not fake-promote an unbuilt artifact.
 
-### First run
+## One-command use
+
+First bootstrap:
 
 ```bat
 BLACK-CODE.cmd
 ```
 
-After bootstrap, open any repository and run:
+Normal use from any code repository:
 
 ```bat
 black-code
 ```
 
-### BLACK Execution Fabric
+Final task verification is available as:
 
-BLACK Code copies the design pattern from BLACK's atomization/recomposition/learning path into BLACK Code only:
-
-```text
-ATOMIZE -> DEDUPE -> REUSE -> PREFETCH/BATCH -> RECOMPOSE -> VERIFY -> RECORD
+```bat
+black-code-verify
 ```
 
-The speed-first runtime uses **IQ2_M + fused MTP max 2**. `ngram-mod` and forced `cache-reuse` remain off after measured agentic regressions. On 12 GB VRAM hardware the default context is **16,384** with about **1,024 MiB** fit headroom so more of the 10.6 GB model stays on GPU.
+## Execution contract
 
-The previous IQ4_XS runtime is not retained as a selectable BLACK Code profile. Once IQ2_M passes SHA-256 verification, setup removes the superseded local IQ4_XS weight automatically.
+```text
+INDEX -> RULES -> DELTA -> BATCH -> EDIT
+      -> STRUCTURAL_OK -> RESOLVE
+      -> AFFECTED_VERIFY -> FINAL_VERIFY
+      -> HASH_BIND -> RECORD
+```
 
-A clean process exit remains `UNVERIFIED` until real task verification exists.
+Syntax or patch success is never task success by itself. After the final edit, `black-code-verify` must produce strong project/runtime evidence. The completion governor binds that result to the current workspace fingerprint; a later edit invalidates it and prevents an unverified completion from being presented as finished.
 
-See [`local-runtime/README.md`](local-runtime/README.md) for runtime details and diagnostics.
+The runtime also preserves unverified state across sessions and rejects an identical failed command against the same unchanged workspace state.
+
+## Speed and download path
+
+The canonical runtime retains MTP2, repo delta indexing, affected-test mapping, automatic context/VRAM fitting and observation-only bottleneck telemetry. Independent CPU-side work may be parallelized, while 27B model inference stays at one local slot.
+
+Hugging Face model setup uses 8 concurrent HTTP range workers by default, verifies every chunk and joined size, then verifies the pinned GGUF SHA-256. It falls back to a resumable single-stream download if parallel range transfer is unavailable or fails.
+
+## Claude-style donor compatibility
+
+The older custom Python Claude-Code-style BLACK Code is not a second canonical execution runtime. Its useful capabilities are incorporated selectively: Claude/BLACK project-rule hierarchy, continuity of unfinished/unverified work, failure-repeat prevention, and evidence-gated completion.
+
+OpenCode remains the TUI/tool runtime. Current OpenCode-native skill discovery is used rather than maintaining a duplicate BLACK Code skill loader.
+
+See [`local-runtime/README.md`](local-runtime/README.md), [`local-runtime/SPEED_PROFILE.md`](local-runtime/SPEED_PROFILE.md), and [`local-runtime/CANONICAL_ARCHITECTURE.md`](local-runtime/CANONICAL_ARCHITECTURE.md).
 
 ## BLACK Sentinel — Codex Pet
 
-`codex-pet/` contains the BLACK Code Codex V2 companion package. See [`codex-pet/README.md`](codex-pet/README.md) for details.
+`codex-pet/` remains a separate BLACK Code companion package; see [`codex-pet/README.md`](codex-pet/README.md).
