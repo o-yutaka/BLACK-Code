@@ -116,7 +116,12 @@ $Quantize = Join-Path $LlamaBinDir "llama-quantize.exe"
 if (-not (Test-Path -LiteralPath $Quantize)) { throw "llama-quantize.exe missing: $Quantize. Run BLACK Code setup with the current llama.cpp package first." }
 $quantHelp = Get-HelpText $Quantize
 if (-not $quantHelp.Contains([string]$Lock.llama_cpp_conversion_source.required_quantizer_flag)) { throw "Installed llama-quantize does not support --tensor-type-file. Update BLACK Code llama.cpp first." }
-$QuantizerVersion = (& $Quantize --version 2>&1 | Out-String).Trim()
+$quantVersionOut=[IO.Path]::GetTempFileName();$quantVersionErr=[IO.Path]::GetTempFileName()
+try {
+    $quantVersionProcess=Start-Process -FilePath $Quantize -ArgumentList "--version" -WorkingDirectory $env:SystemRoot -Wait -PassThru -RedirectStandardOutput $quantVersionOut -RedirectStandardError $quantVersionErr
+    if($quantVersionProcess.ExitCode -ne 0){throw "llama-quantize --version failed with exit code $($quantVersionProcess.ExitCode)"}
+    $QuantizerVersion=((Get-Content -Raw -LiteralPath $quantVersionOut -ErrorAction SilentlyContinue)+(Get-Content -Raw -LiteralPath $quantVersionErr -ErrorAction SilentlyContinue)).Trim()
+} finally {Remove-Item -Force -ErrorAction SilentlyContinue $quantVersionOut,$quantVersionErr}
 
 $root = [IO.Path]::GetPathRoot((Resolve-Path -LiteralPath $WorkDir).Path)
 $drive = [IO.DriveInfo]::new($root)
