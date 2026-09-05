@@ -27,6 +27,8 @@ jobs:
             './local-runtime/watch-hf-transfer.ps1',
             './local-runtime/inspect-parent-7.27.ps1',
             './local-runtime/setup-resumable-7.27.ps1',
+            './local-runtime/run-model-pipeline-7.27.ps1',
+            './local-runtime/verify-model-pipeline-7.27.ps1',
             './local-runtime/install-prebuilt-7.27.ps1',
             './local-runtime/publish-prebuilt-7.27.ps1'
           )
@@ -55,6 +57,24 @@ jobs:
           $inspection = ./local-runtime/inspect-parent-7.27.ps1 -WorkDir $work | ConvertFrom-Json
           if ($inspection.verdict -ne 'INCOMPLETE_OR_NOT_STARTED') { throw "unexpected parent inspection verdict: $($inspection.verdict)" }
           if ($inspection.recorded_hf_pid_alive_and_matching) { throw 'status smoke incorrectly found an active hf process' }
+      - name: Smoke governed pipeline status
+        shell: powershell
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP 'black-pipeline-state-smoke'
+          $json = ./local-runtime/run-model-pipeline-7.27.ps1 -ModelWorkDir $work -StatusOnly
+          $state = $json | ConvertFrom-Json
+          if ($state.schema_version -ne '1.0') { throw 'pipeline state schema mismatch' }
+          if ($state.status -ne 'STATUS') { throw "unexpected pipeline state: $($state.status)" }
+          if ($state.phase -ne 'PARENT_PENDING') { throw "unexpected initial pipeline phase: $($state.phase)" }
+          if (-not (Test-Path -LiteralPath (Join-Path $work 'model-pipeline-state.json'))) { throw 'pipeline state file missing' }
+      - name: Smoke final verifier fails closed
+        shell: powershell
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP 'black-pipeline-verifier-smoke'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          $failed = $false
+          try { ./local-runtime/verify-model-pipeline-7.27.ps1 -ModelWorkDir $work | Out-Null } catch { $failed = $true }
+          if (-not $failed -and $LASTEXITCODE -eq 0) { throw 'pipeline verifier accepted missing artifact/manifest' }
       - name: Smoke partial shard is never complete
         shell: powershell
         run: |
