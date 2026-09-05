@@ -1,4 +1,4 @@
-# BLACK Code Canonical Architecture v4
+# BLACK Code Canonical Architecture v5
 
 ## Boundary
 
@@ -10,13 +10,13 @@ The older Python Claude-style BLACK Code remains donor/reference only, not a sec
 
 | Capability | Canonical owner | Decision |
 | --- | --- | --- |
-| terminal coding UI and tool execution | OpenCode | KEEP |
-| local model serving | llama.cpp CUDA | KEEP |
+| terminal coding UI and tool execution | OpenCode 1.18.28 | PINNED |
+| local model serving | llama.cpp b10809 / CUDA 12.4 | PINNED |
 | main model | BLACK 7.27 uncensored custom GGUF | FIXED |
 | local model inference concurrency | one slot | KEEP |
 | speculative decoding | external uncensored Q4_0 MTP, max2 | KEEP |
-| repository structure/delta | `repo-index.ps1` | KEEP |
-| affected test hints | `repo-index.ps1` + agent policy | KEEP/strengthen |
+| repository structure/delta | `repo-index.ps1` v2 | CANONICAL; includes untracked |
+| affected test hints | repo delta + package/test mapping | KEEP/strengthen |
 | context/VRAM policy | `black-code.ps1` | KEEP |
 | tool/model bottleneck telemetry | OpenCode telemetry + llama logs | KEEP |
 | Claude/BLACK rule hierarchy | `rule-bridge.ps1` | KEEP |
@@ -24,10 +24,27 @@ The older Python Claude-style BLACK Code remains donor/reference only, not a sec
 | donor custom Python TUI/router/server | donor/reference only | DROP from canonical runtime |
 | syntax-only post-edit success | `STRUCTURAL_OK` only | NEVER final verification |
 | final verification | `verification-gate.ps1` / `black-code-verify` | CANONICAL |
-| final claim authority | `opencode-governor.js` | CANONICAL |
+| final claim authority | `opencode-governor.js` v3 | WORKSPACE + RUNTIME BOUND |
 | vision | none | DROP |
 | Hugging Face parent transfer | HF/Xet high performance | CANONICAL |
 | fixed artifact transfer | parallel range downloader + hash | CANONICAL |
+
+## Runtime lock
+
+`runtime.lock.json` is part of the canonical identity. Setup does not select whatever runtime is newest at install time.
+
+Pinned runtime:
+
+```text
+OpenCode           1.18.28
+llama.cpp          b10809 / v0.4.0 line
+llama commit       5266f24da75dc449bd56cbed7addb9c8e4a6a73e
+CUDA asset         12.4 / Windows x64
+binary ZIP SHA     c77bfcd9ed8d91e8721a2d6a290b907fddd4fa5412a47b21c6fa1709116b85f9
+cudart ZIP SHA     8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6
+```
+
+Setup verifies artifact SHA-256 before extraction and enforces the exact OpenCode version. `doctor.ps1` rejects version drift rather than silently accepting a different runtime.
 
 ## Fixed model
 
@@ -44,7 +61,7 @@ Its build identity is locked by `model-7.27.lock.json`:
 3. pinned Unsloth 7.27 GGUF tensor-precision reference revision;
 4. exact tensor-name inventory equality before quantization;
 5. pinned uncensored importance matrix;
-6. current llama quantizer must support `--tensor-type-file`;
+6. pinned llama conversion source with `--tensor-type-file` support;
 7. dry-run before real quantization;
 8. final GGUF must be between 7.20 and 7.35 GB decimal;
 9. final SHA-256 is written to `model-7.27.local.json` and becomes the local immutable artifact identity.
@@ -98,6 +115,24 @@ Range-only tensor directory         |
 
 A Range server returning the full reference instead of HTTP 206 is rejected. BLACK Code never downloads the 7.27 reference in full merely to copy its tensor allocation.
 
+## Repository delta v2
+
+Untracked files are first-class project state. New source files and new tests must not disappear from affected-work detection.
+
+```text
+HEAD delta
++ staged/unstaged tracked delta
++ untracked files
+       |
+       v
+current package/test inventory
+       |
+       v
+likely affected tests
+```
+
+The same rule applies to project dirty identity and completion proofs.
+
 ## Runtime state machine
 
 ```text
@@ -128,7 +163,7 @@ AFFECTED_VERIFY                    |
 FINAL_VERIFY --fail--> REPAIR -----+
    |
    v
-WORKSPACE_HASH + VERIFY_PROFILE
+WORKSPACE_HASH + RUNTIME_HASH + VERIFY_PROFILE
    |
    v
 VERIFICATION_TOKEN
@@ -137,7 +172,11 @@ VERIFICATION_TOKEN
 FINAL/RECORD
 ```
 
-Any mutation after final verification invalidates the token.
+Any project mutation or relevant runtime/model/rules/verifier mutation after final verification invalidates the token. This invalidation persists across BLACK Code sessions.
+
+## Runtime fingerprint
+
+The completion governor binds verification to the current runtime environment as well as the workspace. The fingerprint incorporates the installed runtime state, local model manifest, verifier, governor, project rules/instructions and observable runtime versions. A previously verified workspace is therefore not automatically trusted after a model/runtime/rule/verifier change.
 
 ## Definition of usable code
 
@@ -155,7 +194,7 @@ If no strong standard verification path exists, `black-code-verify` returns BLOC
 
 ## Completion authority
 
-The model can propose completion but cannot authorize it. `opencode-governor.js` owns final-claim admission by binding successful final verification to the current workspace fingerprint, invalidating that proof after mutations, preserving unverified continuity across restarts and rejecting identical failed shell retries against the same workspace state.
+The model can propose completion but cannot authorize it. `opencode-governor.js` owns final-claim admission by binding successful final verification to both workspace and runtime fingerprints, invalidating proof after relevant mutations, preserving unverified continuity across restarts and rejecting identical failed shell retries against the same workspace + runtime state.
 
 ## Performance objective
 
