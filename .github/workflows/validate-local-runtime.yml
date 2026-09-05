@@ -53,3 +53,45 @@ jobs:
           $inspection = ./local-runtime/inspect-parent-7.27.ps1 -WorkDir $work | ConvertFrom-Json
           if ($inspection.verdict -ne 'INCOMPLETE_OR_NOT_STARTED') { throw "unexpected parent inspection verdict: $($inspection.verdict)" }
           if ($inspection.recorded_hf_pid_alive_and_matching) { throw 'status smoke incorrectly found an active hf process' }
+      - name: Smoke active parent handoff attach
+        shell: powershell
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP 'black-parent-attach-smoke'
+          $source = Join-Path $work 'uncensored-parent'
+          New-Item -ItemType Directory -Force -Path $source | Out-Null
+          $config = Join-Path $source 'config.json'
+          $tensor = Join-Path $source 'fixture.safetensors'
+          $repo = 'JonathanColetti/Qwen3.8-27B-Uncensored'
+          $cmd = "ping 127.0.0.1 -n 3 >nul & echo {}>`"$config`" & echo x>`"$tensor`" & rem hf.exe $repo $source"
+          $dummy = Start-Process -FilePath cmd.exe -ArgumentList @('/d','/c',$cmd) -PassThru -WindowStyle Hidden
+          Start-Sleep -Milliseconds 500
+          ./local-runtime/prepare-parent-7.27.ps1 -WorkDir $work -PollSeconds 5
+          $state = Get-Content -Raw -LiteralPath (Join-Path $work 'parent-download-state.json') | ConvertFrom-Json
+          if ($state.status -ne 'VERIFIED_COMPLETE') { throw "handoff did not reach VERIFIED_COMPLETE: $($state.status)" }
+          if ([int64]$state.parent_bytes -le 0) { throw 'handoff fixture recorded zero parent bytes' }
+          if (-not $state.snapshot_complete) { throw 'handoff fixture snapshot was not marked complete' }
+          Wait-Process -Id $dummy.Id -ErrorAction SilentlyContinue
+      - name: Smoke prebuilt failure preserves resumable stage
+        shell: powershell
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'black-prebuilt-resume-smoke'
+          Copy-Item -Recurse -Force ./local-runtime $fixture
+          @'
+          param([string]$Url,[string]$Destination,[int]$Workers=8)
+          throw 'fixture transfer failure'
+          '@ | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $fixture 'hf-parallel-download.ps1')
+          $modelDir = Join-Path $fixture 'models'
+          $stage = Join-Path $modelDir '.prebuilt-7.27-stage'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $modelName = 'Qwen3.8-27B-Uncensored-BLACK-UD-IQ2_XXS.gguf'
+          $partial = Join-Path $stage ($modelName + '.part')
+          Set-Content -Encoding Byte -LiteralPath $partial -Value ([byte[]](1,2,3,4))
+          $failed = $false
+          try {
+            & (Join-Path $fixture 'install-prebuilt-7.27.ps1') -ModelUrl 'https://example.invalid/model' -ManifestUrl 'https://example.invalid/manifest' -ExpectedSha256 ('0' * 64) -ModelDir $modelDir -Workers 2
+          } catch {
+            $failed = $true
+          }
+          if (-not $failed) { throw 'prebuilt failure fixture unexpectedly succeeded' }
+          if (-not (Test-Path -LiteralPath $partial)) { throw 'prebuilt failure deleted resumable .part data' }
+          if (-not (Test-Path -LiteralPath $stage)) { throw 'prebuilt failure deleted stage directory' }
