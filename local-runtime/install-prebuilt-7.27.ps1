@@ -63,16 +63,33 @@ function Assert-Manifest([object]$Manifest,[int64]$MeasuredBytes,[string]$Measur
     }
 }
 
-New-Item -ItemType Directory -Force -Path $ModelDir | Out-Null
-if (Test-Path -LiteralPath $StageDir) { Remove-Item -Recurse -Force $StageDir }
-New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
+function Test-StagedModel {
+    if (-not (Test-Path -LiteralPath $StageModel)) { return $false }
+    try {
+        Assert-Gguf $StageModel
+        $bytes = (Get-Item -LiteralPath $StageModel).Length
+        $min = [int64]$Lock.canonical_model.target_min_bytes
+        $max = [int64]$Lock.canonical_model.target_max_bytes
+        if ($bytes -lt $min -or $bytes -gt $max) { return $false }
+        $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $StageModel).Hash.ToLowerInvariant()
+        return $sha -eq $ExpectedSha256.ToLowerInvariant()
+    } catch { return $false }
+}
+
+New-Item -ItemType Directory -Force -Path $ModelDir,$StageDir | Out-Null
+$completed = $false
 try {
-    Write-Host "Downloading BLACK 7.27 prebuilt GGUF with resumable range transport" -ForegroundColor Cyan
-    & $Downloader -Url $ModelUrl -Destination $StageModel -Workers $Workers
-    if ($LASTEXITCODE -ne 0) { throw "Prebuilt model download failed with exit code $LASTEXITCODE" }
-    Write-Host "Downloading BLACK 7.27 canonical manifest" -ForegroundColor Cyan
-    & $Downloader -Url $ManifestUrl -Destination $StageManifest -Workers 1
-    if ($LASTEXITCODE -ne 0) { throw "Prebuilt manifest download failed with exit code $LASTEXITCODE" }
+    if (Test-StagedModel) {
+        Write-Host "Reusing verified staged BLACK 7.27 GGUF; model download skipped." -ForegroundColor Green
+    } else {
+        if (Test-Path -LiteralPath $StageModel) {
+            Remove-Item -Force -LiteralPath $StageModel
+            Write-Host "Removed invalid completed stage model; resumable .part/.chunks data was preserved." -ForegroundColor Yellow
+        }
+        Write-Host "Downloading BLACK 7.27 prebuilt GGUF with resumable range transport" -ForegroundColor Cyan
+        & $Downloader -Url $ModelUrl -Destination $StageModel -Workers $Workers
+        if ($LASTEXITCODE -ne 0) { throw "Prebuilt model download failed with exit code $LASTEXITCODE" }
+    }
 
     Assert-Gguf $StageModel
     $bytes = (Get-Item -LiteralPath $StageModel).Length
@@ -81,11 +98,30 @@ try {
     if ($bytes -lt $min -or $bytes -gt $max) { throw "Prebuilt model outside canonical size window: $bytes bytes, expected $min..$max" }
     $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $StageModel).Hash.ToLowerInvariant()
     if ($sha -ne $ExpectedSha256.ToLowerInvariant()) { throw "Prebuilt model SHA256 mismatch: $sha != $($ExpectedSha256.ToLowerInvariant())" }
+
+    $manifestUsable = $false
+    if (Test-Path -LiteralPath $StageManifest) {
+        try {
+            $existingManifest = Get-Content -Raw -LiteralPath $StageManifest | ConvertFrom-Json
+            Assert-Manifest $existingManifest $bytes $sha
+            $manifestUsable = $true
+        } catch { $manifestUsable = $false }
+    }
+    if ($manifestUsable) {
+        Write-Host "Reusing verified staged canonical manifest; manifest download skipped." -ForegroundColor Green
+    } else {
+        if (Test-Path -LiteralPath $StageManifest) { Remove-Item -Force -LiteralPath $StageManifest }
+        Write-Host "Downloading BLACK 7.27 canonical manifest" -ForegroundColor Cyan
+        & $Downloader -Url $ManifestUrl -Destination $StageManifest -Workers 1
+        if ($LASTEXITCODE -ne 0) { throw "Prebuilt manifest download failed with exit code $LASTEXITCODE" }
+    }
+
     $manifest = Get-Content -Raw -LiteralPath $StageManifest | ConvertFrom-Json
     Assert-Manifest $manifest $bytes $sha
 
     Move-Item -Force -LiteralPath $StageModel -Destination $ModelPath
     Move-Item -Force -LiteralPath $StageManifest -Destination $ManifestPath
+    $completed = $true
     Write-Host "BLACK 7.27 PREBUILT MODEL INSTALLED AND VERIFIED" -ForegroundColor Green
     Write-Host "Model:    $ModelPath"
     Write-Host "Bytes:    $bytes"
@@ -93,5 +129,9 @@ try {
     Write-Host "Manifest: $ManifestPath"
     Write-Host "Next: run setup.ps1 normally; Test-CanonicalModel should skip source rebuild."
 } finally {
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $StageDir
+    if ($completed) {
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $StageDir
+    } else {
+        Write-Host "Prebuilt stage preserved for resume: $StageDir" -ForegroundColor Yellow
+    }
 }

@@ -1,5 +1,6 @@
 param(
     [string]$WorkDir = (Join-Path $env:LOCALAPPDATA "BLACK-Code\model-build-7.27"),
+    [ValidateRange(5,300)][int]$PollSeconds = 15,
     [switch]$StatusOnly
 )
 
@@ -75,6 +76,7 @@ function Write-State([string]$Phase,[string]$Status,[object]$HfPid,[string]$Deta
     $snapshot = Get-SnapshotStatus $SourceDir
     $root = [IO.Path]::GetPathRoot((Resolve-Path -LiteralPath $WorkDir).Path)
     $drive = [IO.DriveInfo]::new($root)
+    $parentBytes = Get-DirectoryBytes $SourceDir
     $state = [ordered]@{
         schema_version = "1.0"
         updated_at = (Get-Date).ToString("o")
@@ -87,18 +89,19 @@ function Write-State([string]$Phase,[string]$Status,[object]$HfPid,[string]$Deta
         revision = [string]$Lock.uncensored_parent.revision
         work_dir = $WorkDir
         source_dir = $SourceDir
-        parent_bytes = Get-DirectoryBytes $SourceDir
+        parent_bytes = [int64]$parentBytes
         latest_write_utc = Get-LatestWrite $SourceDir
         snapshot_complete = [bool]$snapshot.complete
         expected_shards = [int]$snapshot.expected_shards
         missing_or_empty_shards = [int]$snapshot.missing_or_empty_shards
         free_bytes = [int64]$drive.AvailableFreeSpace
+        effective_bytes = [int64]$drive.AvailableFreeSpace + [int64]$parentBytes
         required_effective_bytes = 125000000000L
         detail = $Detail
         stdout_log = $StdoutPath
         stderr_log = $StderrPath
     }
-    $temp = "$StatePath.tmp"
+    $temp = "$StatePath.tmp-$PID"
     $state | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath $temp
     Move-Item -Force -LiteralPath $temp -Destination $StatePath
 }
@@ -108,6 +111,13 @@ function Assert-SnapshotComplete([string]$Path) {
     if (-not $snapshot.complete) {
         throw "Parent snapshot incomplete: expected=$($snapshot.expected_shards) missing_or_empty=$($snapshot.missing_or_empty_shards)"
     }
+}
+
+function Get-ActiveParentTransfers {
+    $repoPattern = [regex]::Escape([string]$Lock.uncensored_parent.repo)
+    return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.CommandLine -and $_.CommandLine -match 'hf\.exe' -and $_.CommandLine -match $repoPattern
+    })
 }
 
 New-Item -ItemType Directory -Force -Path $WorkDir,$SourceDir | Out-Null
@@ -127,13 +137,37 @@ if ($existing.complete) {
     exit 0
 }
 
-$active = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-    $_.CommandLine -and $_.CommandLine -match 'hf\.exe' -and $_.CommandLine -match [regex]::Escape([string]$Lock.uncensored_parent.repo)
-})
+$active = @(Get-ActiveParentTransfers)
 if ($active.Count -gt 0) {
-    $pids = ($active | ForEach-Object { $_.ProcessId }) -join ','
-    Write-State "PARENT_SNAPSHOT" "ALREADY_ACTIVE" ([int]$active[0].ProcessId) "Existing hf.exe parent download detected: $pids"
-    throw "Parent download is already active in Windows process(es): $pids. Do not start a duplicate download."
+    $sourcePattern = [regex]::Escape($SourceDir)
+    $matching = @($active | Where-Object { $_.CommandLine -match $sourcePattern })
+    if ($matching.Count -eq 0) {
+        $pids = ($active | ForEach-Object { $_.ProcessId }) -join ','
+        Write-State "PARENT_SNAPSHOT" "OTHER_PARENT_TRANSFER_ACTIVE" ([int]$active[0].ProcessId) "Same pinned parent is downloading in another WorkDir: $pids"
+        throw "Pinned parent is already downloading in another Windows process/WorkDir: $pids. Refusing a duplicate large transfer."
+    }
+
+    $attachedPid = [int]$matching[0].ProcessId
+    Write-Host "==> Attaching to existing Windows HF parent transfer PID $attachedPid" -ForegroundColor Yellow
+    while ($true) {
+        $live = Get-CimInstance Win32_Process -Filter "ProcessId = $attachedPid" -ErrorAction SilentlyContinue
+        if (-not $live) { break }
+        if (-not $live.CommandLine -or $live.CommandLine -notmatch [regex]::Escape([string]$Lock.uncensored_parent.repo)) { break }
+        Write-State "PARENT_SNAPSHOT" "DOWNLOADING" $attachedPid "Attached to an existing Windows hf.exe transfer; no duplicate process was started."
+        $bytes = Get-DirectoryBytes $SourceDir
+        Write-Host ("[7.27] attached pid={0} parent={1:N2} GiB latest={2}" -f $attachedPid,($bytes/1GB),(Get-LatestWrite $SourceDir))
+        Start-Sleep -Seconds $PollSeconds
+    }
+
+    $afterAttach = Get-SnapshotStatus $SourceDir
+    if ($afterAttach.complete) {
+        Write-State "PARENT_SNAPSHOT" "VERIFIED_COMPLETE" $null "Attached transfer ended with a complete pinned parent snapshot."
+        Write-Host "BLACK 7.27 attached parent transfer VERIFIED COMPLETE" -ForegroundColor Green
+        exit 0
+    }
+
+    Write-State "PARENT_SNAPSHOT" "RESUME_REQUIRED" $null "Attached hf.exe ended before snapshot completeness; existing partial files are preserved and will be resumed."
+    Write-Host "[7.27] attached transfer ended incomplete; resuming the same SourceDir without purge." -ForegroundColor Yellow
 }
 
 $Python = Require-Command "python.exe"
@@ -166,14 +200,15 @@ $previousXet = $env:HF_XET_HIGH_PERFORMANCE
 $previousTimeout = $env:HF_HUB_DOWNLOAD_TIMEOUT
 $env:HF_XET_HIGH_PERFORMANCE = "1"
 $env:HF_HUB_DOWNLOAD_TIMEOUT = "600"
-Remove-Item -Force -ErrorAction SilentlyContinue $StdoutPath,$StderrPath
 try {
     Write-State "PARENT_SNAPSHOT" "STARTING" $null "Starting resumable pinned parent download through Windows hf.exe / HF Xet."
     $args = @("download",[string]$Lock.uncensored_parent.repo,"--revision",[string]$Lock.uncensored_parent.revision,"--local-dir",$SourceDir)
     $process = Start-Process -FilePath $Hf -ArgumentList $args -WorkingDirectory $env:SystemRoot -PassThru -RedirectStandardOutput $StdoutPath -RedirectStandardError $StderrPath
     while (-not $process.HasExited) {
-        Write-State "PARENT_SNAPSHOT" "DOWNLOADING" ([int]$process.Id) "Windows hf.exe is active. Re-running this script is not required; use -StatusOnly to inspect state."
-        Start-Sleep -Seconds 15
+        Write-State "PARENT_SNAPSHOT" "DOWNLOADING" ([int]$process.Id) "Windows hf.exe is active. A replacement CLI can rerun this script and attach instead of starting a duplicate."
+        $bytes = Get-DirectoryBytes $SourceDir
+        Write-Host ("[7.27] downloading pid={0} parent={1:N2} GiB latest={2}" -f $process.Id,($bytes/1GB),(Get-LatestWrite $SourceDir))
+        Start-Sleep -Seconds $PollSeconds
         $process.Refresh()
     }
     if ($process.ExitCode -ne 0) {
