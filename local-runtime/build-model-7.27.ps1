@@ -39,10 +39,14 @@ function Require-Command([string]$Name) {
 }
 function Invoke-Native([string]$File,[string[]]$Arguments,[string]$Label) {
     Write-Host "[7.27] $Label" -ForegroundColor Cyan
-    & $File @Arguments
-    $code = $LASTEXITCODE
-    if ($null -eq $code) { $code = 0 }
-    if ($code -ne 0) { throw "$Label failed with exit code $code" }
+    $stdout=[IO.Path]::GetTempFileName();$stderr=[IO.Path]::GetTempFileName()
+    try {
+        $p=Start-Process -FilePath $File -ArgumentList $Arguments -WorkingDirectory $env:SystemRoot -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        if ($p.ExitCode -ne 0) {
+            $detail=((Get-Content -Raw -LiteralPath $stderr -ErrorAction SilentlyContinue)+(Get-Content -Raw -LiteralPath $stdout -ErrorAction SilentlyContinue)).Trim()
+            throw "$Label failed with exit code $($p.ExitCode): $detail"
+        }
+    } finally { Remove-Item -Force -ErrorAction SilentlyContinue $stdout,$stderr }
 }
 function Assert-Sha([string]$Path,[string]$Expected,[string]$Label) {
     if (-not (Test-Path -LiteralPath $Path)) { throw "$Label missing: $Path" }
