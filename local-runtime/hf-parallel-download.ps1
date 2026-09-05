@@ -103,9 +103,15 @@ foreach ($job in $jobs) {
 }
 
 if ($failed) {
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $chunkRoot
-    Download-Sequential $curl $Url $Destination
-    return
+    Write-Warning "Parallel transfer had failed chunks. Completed chunks are being preserved until the sequential fallback succeeds."
+    try {
+        Download-Sequential $curl $Url $Destination
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $chunkRoot
+        return
+    } catch {
+        Write-Warning "Sequential fallback also failed; preserving completed parallel chunks and .part data for the next retry."
+        throw
+    }
 }
 
 $out = [System.IO.File]::Open($partial, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
