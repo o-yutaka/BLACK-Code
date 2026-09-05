@@ -66,4 +66,7 @@ jobs:
           $work = Join-Path $env:RUNNER_TEMP 'black-final-verifier-empty'
           New-Item -ItemType Directory -Force -Path $work | Out-Null
           & ./local-runtime/verify-model-pipeline-7.27.ps1 -ModelWorkDir $work | Out-Null
-          if ($LASTEXITCODE -eq 0) { throw 'final verifier accepted an absent model/manifest' }
+          $expectedCode = $LASTEXITCODE
+          if ($expectedCode -eq 0) { throw 'final verifier accepted an absent model/manifest' }
+          Write-Host "Verifier correctly failed closed with exit code $expectedCode"
+          $global:LASTEXITCODE = 0
