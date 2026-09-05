@@ -1,8 +1,8 @@
 import fs from "node:fs"
 
-const [, , url, outputPath] = process.argv
+const [, , url, outputPath, localGgufPath] = process.argv
 if (!url || !outputPath) {
-  console.error("usage: node extract-quant-map.mjs <remote-gguf-url> <output-tensor-types.txt>")
+  console.error("usage: node extract-quant-map.mjs <remote-gguf-url> <output-tensor-types.txt> [local-gguf-to-compare]")
   process.exit(2)
 }
 
@@ -58,50 +58,77 @@ function makeReader(buffer) {
   return { u32, u64, str, value, skip, position: () => p }
 }
 
-function parse(buffer) {
+function parse(buffer, sourceLabel) {
+  if (buffer.length < 4 || buffer.subarray(0, 4).toString("ascii") !== "GGUF") throw new Error(`${sourceLabel} is not GGUF`)
   const r = makeReader(buffer)
   r.skip(4)
-  if (buffer.subarray(0, 4).toString("ascii") !== "GGUF") throw new Error("remote file is not GGUF")
   const version = r.u32()
   if (version < 2 || version > 3) throw new Error(`unsupported GGUF version ${version}`)
   const tensorCount = r.u64()
   const kvCount = r.u64()
-  for (let i = 0; i < kvCount; i++) {
-    r.str()
-    r.value(r.u32())
-  }
+  for (let i = 0; i < kvCount; i++) { r.str(); r.value(r.u32()) }
   const tensors = []
   for (let i = 0; i < tensorCount; i++) {
     const name = r.str()
     const dims = r.u32()
     for (let d = 0; d < dims; d++) r.u64()
-    const dtype = r.u32()
+    const dtypeNumber = r.u32()
     r.u64()
-    if (!TYPE.has(dtype)) throw new Error(`unsupported GGML dtype ${dtype} on tensor ${name}`)
-    tensors.push({ name, dtype: TYPE.get(dtype) })
+    if (!TYPE.has(dtypeNumber)) throw new Error(`unsupported GGML dtype ${dtypeNumber} on tensor ${name}`)
+    tensors.push({ name, dtype: TYPE.get(dtypeNumber) })
   }
   return { version, tensorCount, tensors, parsedBytes: r.position() }
 }
 
-async function fetchPrefix(bytes) {
+async function fetchRemotePrefix(bytes) {
   const response = await fetch(url, { headers: { Range: `bytes=0-${bytes - 1}` }, redirect: "follow" })
-  if (!(response.ok || response.status === 206)) throw new Error(`HTTP ${response.status} while reading GGUF header`)
+  if (response.status !== 206) {
+    try { await response.body?.cancel() } catch {}
+    throw new Error(`remote GGUF must support byte ranges; expected HTTP 206, got ${response.status}`)
+  }
+  const contentRange = response.headers.get("content-range") || ""
+  if (!contentRange.toLowerCase().startsWith("bytes 0-")) throw new Error(`invalid Content-Range: ${contentRange}`)
   return Buffer.from(await response.arrayBuffer())
 }
 
-let parsed = null
-for (let bytes = 1024 * 1024; bytes <= 64 * 1024 * 1024; bytes *= 2) {
-  const buffer = await fetchPrefix(bytes)
-  try { parsed = parse(buffer); break }
-  catch (error) {
-    if (error instanceof NeedMore) continue
-    throw error
+function readLocalPrefix(filePath, bytes) {
+  const fd = fs.openSync(filePath, "r")
+  try {
+    const length = Math.min(bytes, fs.fstatSync(fd).size)
+    const buffer = Buffer.allocUnsafe(length)
+    fs.readSync(fd, buffer, 0, length, 0)
+    return buffer
+  } finally { fs.closeSync(fd) }
+}
+
+async function parseWithGrowth(readPrefix, label) {
+  for (let bytes = 1024 * 1024; bytes <= 64 * 1024 * 1024; bytes *= 2) {
+    const buffer = await readPrefix(bytes)
+    try { return parse(buffer, label) }
+    catch (error) {
+      if (error instanceof NeedMore) continue
+      throw error
+    }
+  }
+  throw new Error(`${label} tensor directory exceeded 64 MiB`)
+}
+
+const reference = await parseWithGrowth(fetchRemotePrefix, "remote reference")
+if (new Set(reference.tensors.map((t) => t.name)).size !== reference.tensorCount) throw new Error("duplicate tensor names in GGUF reference")
+
+if (localGgufPath) {
+  if (!fs.existsSync(localGgufPath)) throw new Error(`local GGUF missing: ${localGgufPath}`)
+  const local = await parseWithGrowth((bytes) => Promise.resolve(readLocalPrefix(localGgufPath, bytes)), "local F16 GGUF")
+  const referenceNames = reference.tensors.map((t) => t.name).sort()
+  const localNames = local.tensors.map((t) => t.name).sort()
+  const missing = referenceNames.filter((name) => !localNames.includes(name))
+  const extra = localNames.filter((name) => !referenceNames.includes(name))
+  if (missing.length || extra.length) {
+    throw new Error(`tensor inventory mismatch: reference=${referenceNames.length} local=${localNames.length} missing=${missing.slice(0, 8).join(",")} extra=${extra.slice(0, 8).join(",")}`)
   }
 }
-if (!parsed) throw new Error("GGUF tensor directory exceeded 64 MiB")
 
 const escapeRegex = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-const lines = parsed.tensors.map(({ name, dtype }) => `^${escapeRegex(name)}$=${dtype}`)
-if (new Set(parsed.tensors.map((t) => t.name)).size !== parsed.tensorCount) throw new Error("duplicate tensor names in GGUF reference")
+const lines = reference.tensors.map(({ name, dtype }) => `^${escapeRegex(name)}$=${dtype}`)
 fs.writeFileSync(outputPath, lines.join("\n") + "\n", "utf8")
-console.log(JSON.stringify({ status: "PASS", version: parsed.version, tensors: parsed.tensorCount, parsed_bytes: parsed.parsedBytes, output: outputPath }))
+console.log(JSON.stringify({ status: "PASS", version: reference.version, tensors: reference.tensorCount, parsed_bytes: reference.parsedBytes, output: outputPath, local_inventory_checked: Boolean(localGgufPath) }))
