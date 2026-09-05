@@ -145,7 +145,12 @@ Invoke-Native $VenvPython @("-m","pip","install","--disable-pip-version-check","
 Invoke-Native $VenvPython @("-m","pip","install","--disable-pip-version-check","huggingface_hub[hf_xet]") "install HF/Xet transport"
 $Hf = Join-Path $VenvDir "Scripts\hf.exe"
 if (-not (Test-Path -LiteralPath $Hf)) { throw "hf CLI was not installed in build venv." }
-$HfHubVersion = (& $VenvPython -c "import huggingface_hub; print(huggingface_hub.__version__)" | Select-Object -First 1).Trim()
+$hfVersionOut=[IO.Path]::GetTempFileName();$hfVersionErr=[IO.Path]::GetTempFileName()
+try {
+    $hfVersionProcess=Start-Process -FilePath $VenvPython -ArgumentList @("-c","import huggingface_hub; print(huggingface_hub.__version__)") -WorkingDirectory $env:SystemRoot -Wait -PassThru -RedirectStandardOutput $hfVersionOut -RedirectStandardError $hfVersionErr
+    $HfHubVersion=((Get-Content -Raw -LiteralPath $hfVersionOut -ErrorAction SilentlyContinue).Trim() -split "`r?`n")[0]
+    if($hfVersionProcess.ExitCode -ne 0 -or -not $HfHubVersion){throw "huggingface_hub version probe failed"}
+} finally {Remove-Item -Force -ErrorAction SilentlyContinue $hfVersionOut,$hfVersionErr}
 
 if ($PurgeDownloadCache -and (Test-Path -LiteralPath $SourceDir)) {
     Write-Host "[7.27] PURGE requested: removing parent snapshot/cache before download" -ForegroundColor Yellow
@@ -245,12 +250,16 @@ foreach ($range in $MeasuredRanges) {
 Remove-Item -Force -ErrorAction SilentlyContinue $TempOutput
 $DryRunLog = Join-Path $WorkDir "quantize-dry-run.log"
 Write-Host "[7.27] llama-quantize dry-run" -ForegroundColor Cyan
-& $Quantize --imatrix $ImatrixPath --tensor-type-file $TensorMap --dry-run $F16Path $TempOutput IQ2_XXS 2>&1 | Tee-Object -FilePath $DryRunLog
-if ($LASTEXITCODE -ne 0) { throw "llama-quantize dry-run failed with exit code $LASTEXITCODE" }
+$dryOut=[IO.Path]::GetTempFileName();$dryErr=[IO.Path]::GetTempFileName()
+try {
+    $dryProcess=Start-Process -FilePath $Quantize -ArgumentList @("--imatrix",$ImatrixPath,"--tensor-type-file",$TensorMap,"--dry-run",$F16Path,$TempOutput,"IQ2_XXS") -WorkingDirectory $env:SystemRoot -Wait -PassThru -RedirectStandardOutput $dryOut -RedirectStandardError $dryErr
+    ((Get-Content -Raw -LiteralPath $dryOut -ErrorAction SilentlyContinue)+(Get-Content -Raw -LiteralPath $dryErr -ErrorAction SilentlyContinue)) | Set-Content -Encoding UTF8 -LiteralPath $DryRunLog
+    if ($dryProcess.ExitCode -ne 0) { throw "llama-quantize dry-run failed with exit code $($dryProcess.ExitCode)" }
+} finally {Remove-Item -Force -ErrorAction SilentlyContinue $dryOut,$dryErr}
 
 Write-Host "[7.27] quantizing BLACK canonical model" -ForegroundColor Cyan
-& $Quantize --imatrix $ImatrixPath --tensor-type-file $TensorMap $F16Path $TempOutput IQ2_XXS
-if ($LASTEXITCODE -ne 0) { throw "llama-quantize failed with exit code $LASTEXITCODE" }
+$quantProcess=Start-Process -FilePath $Quantize -ArgumentList @("--imatrix",$ImatrixPath,"--tensor-type-file",$TensorMap,$F16Path,$TempOutput,"IQ2_XXS") -WorkingDirectory $env:SystemRoot -Wait -PassThru
+if ($quantProcess.ExitCode -ne 0) { throw "llama-quantize failed with exit code $($quantProcess.ExitCode)" }
 Assert-Gguf $TempOutput
 $OutputBytes = (Get-Item -LiteralPath $TempOutput).Length
 $MinBytes = [int64]$Lock.canonical_model.target_min_bytes
