@@ -39,6 +39,11 @@ jobs:
           @'
           param([string]$WorkDir,[int]$StallSeconds=900,[int]$MaxStallRestarts=4,[int]$RetryBackoffSeconds=10)
           New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+          $source = Join-Path $WorkDir 'uncensored-parent'
+          New-Item -ItemType Directory -Force -Path $source | Out-Null
+          '{}' | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $source 'config.json')
+          '{"weight_map":{"fixture.weight":"fixture.safetensors"}}' | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $source 'model.safetensors.index.json')
+          'fixture' | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $source 'fixture.safetensors')
           $lock = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'model-7.27.lock.json') | ConvertFrom-Json
           [ordered]@{
             schema_version='1.1'; status='VERIFIED_COMPLETE'; snapshot_complete=$true;
