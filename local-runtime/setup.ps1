@@ -86,7 +86,33 @@ function Test-CanonicalModel {
         $bytes=(Get-Item -LiteralPath $ModelPath).Length
         if($bytes -lt [int64]$ModelLock.canonical_model.target_min_bytes -or $bytes -gt [int64]$ModelLock.canonical_model.target_max_bytes){return $false}
         $sha=(Get-FileHash -Algorithm SHA256 -LiteralPath $ModelPath).Hash.ToLowerInvariant()
-        return $manifest.status -eq "CANONICAL_FIXED" -and $manifest.model_file -eq $ModelFile -and $manifest.model_sha256 -eq $sha -and $manifest.parent_revision -eq $ModelLock.uncensored_parent.revision
+        $ranges=@($manifest.quant_map_reference_range_evidence)
+        if($ranges.Count -lt 1){return $false}
+        foreach($range in $ranges){
+            if([int64]$range.received_bytes -le 0 -or [int64]$range.remote_total_bytes -le [int64]$range.received_bytes -or ([string]$range.sha256) -notmatch '^[0-9a-f]{64}$' -or ([string]$range.content_range) -notmatch '^bytes 0-[0-9]+/[0-9]+$'){return $false}
+        }
+        return $manifest.schema_version -eq "1.1" -and
+            $manifest.status -eq "CANONICAL_FIXED" -and
+            $manifest.model_file -eq $ModelFile -and
+            [int64]$manifest.model_bytes -eq $bytes -and
+            ([string]$manifest.model_sha256).ToLowerInvariant() -eq $sha -and
+            $manifest.no_mtp -eq $true -and $manifest.vision -eq $false -and
+            $manifest.parent_repo -eq $ModelLock.uncensored_parent.repo -and
+            $manifest.parent_revision -eq $ModelLock.uncensored_parent.revision -and
+            $manifest.parent_snapshot_verified_complete -eq $true -and
+            $manifest.quant_map_reference_repo -eq $ModelLock.quant_map_reference.repo -and
+            $manifest.quant_map_reference_revision -eq $ModelLock.quant_map_reference.revision -and
+            ([string]$manifest.quant_map_reference_expected_full_sha256).ToLowerInvariant() -eq ([string]$ModelLock.quant_map_reference.sha256).ToLowerInvariant() -and
+            $manifest.quant_map_reference_full_sha256_measured -eq $false -and $manifest.quant_map_reference_full_downloaded -eq $false -and
+            ([string]$manifest.imatrix_sha256).ToLowerInvariant() -eq ([string]$ModelLock.imatrix.sha256).ToLowerInvariant() -and
+            [int64]$manifest.tensor_map_entries -ge 100 -and ([string]$manifest.tensor_map_sha256) -match '^[0-9a-f]{64}$' -and
+            ([string]$manifest.reference_tensor_inventory_sha256) -match '^[0-9a-f]{64}$' -and
+            [int64]$manifest.local_f16_bytes -gt 0 -and ([string]$manifest.local_f16_sha256) -match '^[0-9a-f]{64}$' -and
+            $manifest.local_f16_provenance_verified -eq $true -and [int64]$manifest.local_f16_tensor_count -eq [int64]$manifest.tensor_map_entries -and
+            ([string]$manifest.local_f16_tensor_inventory_sha256) -match '^[0-9a-f]{64}$' -and
+            $manifest.local_f16_tensor_inventory_sha256 -eq $manifest.reference_tensor_inventory_sha256 -and $manifest.local_f16_names_match_reference -eq $true -and
+            $manifest.llama_conversion_revision -eq $ModelLock.llama_cpp_conversion_source.revision -and
+            $manifest.quantization -eq "BLACK-UD-IQ2_XXS exact-reference-tensor-map"
     } catch { return $false }
 }
 function Test-Draft {
@@ -99,12 +125,23 @@ function Get-OpenCodeVersion {
     if(-not $oc){return $null}
     try{return ((& $oc.Source --version 2>$null | Select-Object -First 1).ToString().Trim())}catch{return $null}
 }
+function Test-OpenCodePackagePinned {
+    try {
+        $root=((& npm.cmd root -g 2>$null)|Select-Object -First 1).ToString().Trim()
+        if($LASTEXITCODE -ne 0 -or -not $root){return $false}
+        $packagePath=Join-Path $root (([string]$RuntimeLock.opencode.npm_package)+"\package.json")
+        if(-not(Test-Path -LiteralPath $packagePath)){return $false}
+        $package=Get-Content -Raw -LiteralPath $packagePath|ConvertFrom-Json
+        return $package.name -eq [string]$RuntimeLock.opencode.npm_package -and $package.version -eq $OpenCodeVersion
+    } catch { return $false }
+}
 function Test-LlamaPinned([string]$ServerExe,[string]$QuantizeExe) {
     if(-not(Test-Path -LiteralPath $ServerExe) -or -not(Test-Path -LiteralPath $QuantizeExe)){return $false}
     try {
         $text=((& $ServerExe --version 2>&1)|Out-String)
         $commitPrefix=$LlamaCommit.Substring(0,8)
-        return $text -match [regex]::Escape($LlamaTag) -or $text -match [regex]::Escape($commitPrefix) -or $text -match '(?i)build\s+10809'
+        $buildMatches = $text -match [regex]::Escape($LlamaTag) -or $text -match '(?i)build\s+10809'
+        return $buildMatches -and $text -match [regex]::Escape($commitPrefix)
     } catch { return $false }
 }
 
@@ -129,7 +166,7 @@ if((Get-OpenCodeVersion) -ne $OpenCodeVersion){
 }
 Require-Command "opencode" "OpenCode was not found after installation."
 $actualOpenCodeVersion=Get-OpenCodeVersion
-if($actualOpenCodeVersion -ne $OpenCodeVersion){throw "OpenCode version mismatch. Expected $OpenCodeVersion, got $actualOpenCodeVersion"}
+if($actualOpenCodeVersion -ne $OpenCodeVersion -or -not(Test-OpenCodePackagePinned)){throw "OpenCode package/version mismatch. Expected $($RuntimeLock.opencode.npm_package)@$OpenCodeVersion, got CLI $actualOpenCodeVersion"}
 Write-Host "OpenCode PIN VERIFIED: $actualOpenCodeVersion" -ForegroundColor Green
 
 Write-Step "Enforcing pinned llama.cpp $LlamaTag / CUDA $($RuntimeLock.llama_cpp.cuda)"

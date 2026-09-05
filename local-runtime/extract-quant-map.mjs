@@ -1,8 +1,9 @@
 import fs from "node:fs"
+import crypto from "node:crypto"
 
-const [, , url, outputPath, localGgufPath] = process.argv
+const [, , url, outputPath, localGgufPath, evidencePath] = process.argv
 if (!url || !outputPath) {
-  console.error("usage: node extract-quant-map.mjs <remote-gguf-url> <output-tensor-types.txt> [local-gguf-to-compare]")
+  console.error("usage: node extract-quant-map.mjs <remote-gguf-url> <output-tensor-types.txt> [local-gguf-to-compare] [output-evidence.json]")
   process.exit(2)
 }
 
@@ -87,8 +88,23 @@ async function fetchRemotePrefix(bytes) {
     throw new Error(`remote GGUF must support byte ranges; expected HTTP 206, got ${response.status}`)
   }
   const contentRange = response.headers.get("content-range") || ""
-  if (!contentRange.toLowerCase().startsWith("bytes 0-")) throw new Error(`invalid Content-Range: ${contentRange}`)
-  return Buffer.from(await response.arrayBuffer())
+  const match = /^bytes 0-(\d+)\/(\d+|\*)$/i.exec(contentRange)
+  if (!match) throw new Error(`invalid Content-Range: ${contentRange}`)
+  const buffer = Buffer.from(await response.arrayBuffer())
+  const rangeEnd = Number(match[1])
+  if (rangeEnd + 1 !== buffer.length || buffer.length > bytes) {
+    throw new Error(`Range body mismatch: requested=${bytes} content-range=${contentRange} received=${buffer.length}`)
+  }
+  rangeFetches.push({
+    requested_bytes: bytes,
+    content_range: contentRange,
+    received_bytes: buffer.length,
+    remote_total_bytes: match[2] === "*" ? null : Number(match[2]),
+    sha256: sha256(buffer),
+    etag: response.headers.get("etag"),
+    resolved_url: response.url,
+  })
+  return buffer
 }
 
 function readLocalPrefix(filePath, bytes) {
@@ -113,12 +129,23 @@ async function parseWithGrowth(readPrefix, label) {
   throw new Error(`${label} tensor directory exceeded 64 MiB`)
 }
 
+const sha256 = (value) => crypto.createHash("sha256").update(value).digest("hex")
+const inventoryText = (tensors) => tensors.map(({ name, dtype }) => `${name}\t${dtype}\n`).join("")
+const rangeFetches = []
+
 const reference = await parseWithGrowth(fetchRemotePrefix, "remote reference")
 if (new Set(reference.tensors.map((t) => t.name)).size !== reference.tensorCount) throw new Error("duplicate tensor names in GGUF reference")
+const knownTotals = [...new Set(rangeFetches.map((item) => item.remote_total_bytes).filter((value) => value !== null))]
+if (knownTotals.length !== 1) throw new Error("remote reference Range responses did not provide one stable total size")
+const knownEtags = [...new Set(rangeFetches.map((item) => item.etag).filter(Boolean))]
+if (knownEtags.length > 1) throw new Error("remote reference ETag changed while reading tensor inventory")
+if (rangeFetches.some((item) => item.received_bytes >= knownTotals[0])) throw new Error("refusing to treat a full reference download as Range-only evidence")
 
+let localEvidence = null
 if (localGgufPath) {
   if (!fs.existsSync(localGgufPath)) throw new Error(`local GGUF missing: ${localGgufPath}`)
   const local = await parseWithGrowth((bytes) => Promise.resolve(readLocalPrefix(localGgufPath, bytes)), "local F16 GGUF")
+  if (new Set(local.tensors.map((t) => t.name)).size !== local.tensorCount) throw new Error("duplicate tensor names in local F16 GGUF")
   const referenceNames = reference.tensors.map((t) => t.name).sort()
   const localNames = local.tensors.map((t) => t.name).sort()
   const missing = referenceNames.filter((name) => !localNames.includes(name))
@@ -126,9 +153,39 @@ if (localGgufPath) {
   if (missing.length || extra.length) {
     throw new Error(`tensor inventory mismatch: reference=${referenceNames.length} local=${localNames.length} missing=${missing.slice(0, 8).join(",")} extra=${extra.slice(0, 8).join(",")}`)
   }
+  localEvidence = {
+    path: localGgufPath,
+    bytes: fs.statSync(localGgufPath).size,
+    gguf_version: local.version,
+    tensor_count: local.tensorCount,
+    tensor_inventory_sha256: sha256(inventoryText(local.tensors)),
+    names_match_reference: true,
+  }
 }
 
 const escapeRegex = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 const lines = reference.tensors.map(({ name, dtype }) => `^${escapeRegex(name)}$=${dtype}`)
 fs.writeFileSync(outputPath, lines.join("\n") + "\n", "utf8")
-console.log(JSON.stringify({ status: "PASS", version: reference.version, tensors: reference.tensorCount, parsed_bytes: reference.parsedBytes, output: outputPath, local_inventory_checked: Boolean(localGgufPath) }))
+const evidence = {
+  schema_version: "1.0",
+  status: "PASS",
+  reference: {
+    requested_url: url,
+    gguf_version: reference.version,
+    tensor_count: reference.tensorCount,
+    parsed_bytes: reference.parsedBytes,
+    remote_total_bytes: knownTotals[0],
+    tensor_inventory_sha256: sha256(inventoryText(reference.tensors)),
+    fetched_ranges: rangeFetches,
+    full_reference_downloaded: false,
+    full_reference_sha256_measured: false,
+  },
+  tensor_map: {
+    path: outputPath,
+    entries: lines.length,
+    sha256: sha256(lines.join("\n") + "\n"),
+  },
+  local_f16: localEvidence,
+}
+if (evidencePath) fs.writeFileSync(evidencePath, JSON.stringify(evidence, null, 2) + "\n", "utf8")
+console.log(JSON.stringify({ ...evidence, evidence_path: evidencePath || null }))
