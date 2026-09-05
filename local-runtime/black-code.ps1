@@ -142,7 +142,7 @@ $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $stdout = Join-Path $LogDir "llama-$timestamp.out.log"; $stderr = Join-Path $LogDir "llama-$timestamp.err.log"
 $telemetryPath = Join-Path $BottleneckDir "tools-$timestamp.jsonl"
 $bottleneckPath = Join-Path $BottleneckDir "bottleneck-$timestamp.json"
-$serverArgs = @("--model",$ModelPath,"--alias",$ModelAlias,"--host","127.0.0.1","--port","$Port,"--parallel","1","--ctx-size","$Context","--fit","on","--fit-target","$fitTarget","--fit-ctx","$Context","--cache-type-k","q8_0","--cache-type-v","q8_0","--flash-attn","auto","--spec-type","draft-mtp","--spec-draft-n-max","2","--spec-draft-n-min","0","--spec-draft-p-min","0.0","--jinja")
+$serverArgs = @("--model",$ModelPath,"--alias",$ModelAlias,"--host","127.0.0.1","--port","$Port","--parallel","1","--ctx-size","$Context","--fit","on","--fit-target","$fitTarget","--fit-ctx","$Context","--cache-type-k","q8_0","--cache-type-v","q8_0","--flash-attn","auto","--spec-type","draft-mtp","--spec-draft-n-max","2","--spec-draft-n-min","0","--spec-draft-p-min","0.0","--jinja")
 
 Write-Host ""
 Write-Host "BLACK CODE - LOCAL QWEN 3.8" -ForegroundColor Magenta
