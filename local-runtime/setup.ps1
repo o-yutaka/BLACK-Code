@@ -121,9 +121,14 @@ function Test-Draft {
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $DraftPath).Hash.ToLowerInvariant() -eq $DraftSha256.ToLowerInvariant()
 }
 function Get-OpenCodeVersion {
-    $oc=Get-Command "opencode" -ErrorAction SilentlyContinue
-    if(-not $oc){return $null}
-    try{return ((& $oc.Source --version 2>$null | Select-Object -First 1).ToString().Trim())}catch{return $null}
+    $exe=Join-Path $env:APPDATA "npm\node_modules\opencode-ai\bin\opencode.exe"
+    if(-not(Test-Path -LiteralPath $exe)){return $null}
+    $out=[IO.Path]::GetTempFileName();$err=[IO.Path]::GetTempFileName()
+    try {
+        $p=Start-Process -FilePath $exe -ArgumentList "--version" -WorkingDirectory $env:SystemRoot -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+        if($p.ExitCode -ne 0){return $null}
+        return ((Get-Content -Raw -LiteralPath $out -ErrorAction SilentlyContinue).Trim() -split "`r?`n")[0]
+    } catch {return $null} finally {Remove-Item -Force -ErrorAction SilentlyContinue $out,$err}
 }
 function Test-OpenCodePackagePinned {
     try {
@@ -164,7 +169,7 @@ if((Get-OpenCodeVersion) -ne $OpenCodeVersion){
     if($LASTEXITCODE -ne 0){throw "Pinned OpenCode installation failed with exit code $LASTEXITCODE"}
     Refresh-Path
 }
-Require-Command "opencode" "OpenCode was not found after installation."
+if(-not(Test-Path -LiteralPath (Join-Path $env:APPDATA "npm\node_modules\opencode-ai\bin\opencode.exe"))){throw "OpenCode was not found after installation."}
 $actualOpenCodeVersion=Get-OpenCodeVersion
 if($actualOpenCodeVersion -ne $OpenCodeVersion -or -not(Test-OpenCodePackagePinned)){throw "OpenCode package/version mismatch. Expected $($RuntimeLock.opencode.npm_package)@$OpenCodeVersion, got CLI $actualOpenCodeVersion"}
 Write-Host "OpenCode PIN VERIFIED: $actualOpenCodeVersion" -ForegroundColor Green
