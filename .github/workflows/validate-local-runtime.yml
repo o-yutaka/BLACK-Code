@@ -24,6 +24,7 @@ jobs:
         run: |
           $files = @(
             './local-runtime/prepare-parent-7.27.ps1',
+            './local-runtime/inspect-parent-7.27.ps1',
             './local-runtime/setup-resumable-7.27.ps1',
             './local-runtime/install-prebuilt-7.27.ps1',
             './local-runtime/publish-prebuilt-7.27.ps1'
@@ -49,3 +50,6 @@ jobs:
           if ($state.repo -ne 'JonathanColetti/Qwen3.8-27B-Uncensored') { throw 'parent state repo mismatch' }
           if ($state.revision -ne '5bb7aa90f0efef548e87005b1fb7658e522b6b7f') { throw 'parent state revision mismatch' }
           if (-not $state.windows_host) { throw 'parent state did not record Windows host' }
+          $inspection = ./local-runtime/inspect-parent-7.27.ps1 -WorkDir $work | ConvertFrom-Json
+          if ($inspection.verdict -ne 'INCOMPLETE_OR_NOT_STARTED') { throw "unexpected parent inspection verdict: $($inspection.verdict)" }
+          if ($inspection.recorded_hf_pid_alive_and_matching) { throw 'status smoke incorrectly found an active hf process' }
