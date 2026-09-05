@@ -26,6 +26,7 @@ $ModelDir = Join-Path $env:LOCALAPPDATA "BLACK-Code\runtime\models"
 $ModelPath = Join-Path $ModelDir ([string]$Lock.canonical_model.file)
 $ManifestPath = Join-Path $ModelDir "model-7.27.local.json"
 $ParentStatePath = Join-Path $ModelWorkDir "parent-download-state.json"
+$ParentSourceDir = Join-Path $ModelWorkDir "uncensored-parent"
 
 function Test-CanonicalModelPresent {
     if (-not (Test-Path -LiteralPath $ModelPath) -or -not (Test-Path -LiteralPath $ManifestPath)) { return $false }
@@ -41,6 +42,22 @@ function Test-CanonicalModelPresent {
     } catch { return $false }
 }
 
+function Test-ParentFilesComplete {
+    $config = Join-Path $ParentSourceDir "config.json"
+    $indexPath = Join-Path $ParentSourceDir "model.safetensors.index.json"
+    if (-not (Test-Path -LiteralPath $config) -or -not (Test-Path -LiteralPath $indexPath)) { return $false }
+    try {
+        $index = Get-Content -Raw -LiteralPath $indexPath | ConvertFrom-Json
+        $shards = @($index.weight_map.PSObject.Properties | ForEach-Object { [string]$_.Value } | Sort-Object -Unique)
+        if ($shards.Count -lt 1) { return $false }
+        foreach ($shard in $shards) {
+            $path = Join-Path $ParentSourceDir $shard
+            if (-not (Test-Path -LiteralPath $path) -or (Get-Item -LiteralPath $path).Length -le 0) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
 function Test-VerifiedParentState {
     if (-not (Test-Path -LiteralPath $ParentStatePath)) { return $false }
     try {
@@ -49,7 +66,8 @@ function Test-VerifiedParentState {
             $state.snapshot_complete -eq $true -and
             $state.repo -eq [string]$Lock.uncensored_parent.repo -and
             $state.revision -eq [string]$Lock.uncensored_parent.revision -and
-            $state.work_dir -eq $ModelWorkDir
+            $state.work_dir -eq $ModelWorkDir -and
+            (Test-ParentFilesComplete)
     } catch { return $false }
 }
 
@@ -63,7 +81,7 @@ if (-not $PurgeModelDownloadCache -and ($Force -or -not $hasCanonical)) {
         -MaxStallRestarts $ParentMaxStallRestarts `
         -RetryBackoffSeconds $ParentRetryBackoffSeconds
     if ($LASTEXITCODE -ne 0) { throw "Parent preload failed with exit code $LASTEXITCODE" }
-    if (-not (Test-VerifiedParentState)) { throw "Parent preload returned success without durable VERIFIED_COMPLETE state: $ParentStatePath" }
+    if (-not (Test-VerifiedParentState)) { throw "Parent preload returned success but durable state/files are not VERIFIED_COMPLETE: $ParentStatePath" }
     $parentPrepared = $true
 } elseif ($hasCanonical -and -not $Force) {
     Write-Host "==> Canonical BLACK 7.27 model already verified; parent preload skipped" -ForegroundColor Green
