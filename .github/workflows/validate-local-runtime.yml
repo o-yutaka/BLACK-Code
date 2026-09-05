@@ -24,6 +24,7 @@ jobs:
         run: |
           $files = @(
             './local-runtime/prepare-parent-7.27.ps1',
+            './local-runtime/setup-resumable-7.27.ps1',
             './local-runtime/install-prebuilt-7.27.ps1',
             './local-runtime/publish-prebuilt-7.27.ps1'
           )
