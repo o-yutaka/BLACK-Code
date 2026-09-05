@@ -140,12 +140,15 @@ function Test-OpenCodePackagePinned {
 }
 function Test-LlamaPinned([string]$ServerExe,[string]$QuantizeExe) {
     if(-not(Test-Path -LiteralPath $ServerExe) -or -not(Test-Path -LiteralPath $QuantizeExe)){return $false}
+    $out=[IO.Path]::GetTempFileName();$err=[IO.Path]::GetTempFileName()
     try {
-        $text=((& $ServerExe --version 2>&1)|Out-String)
+        $p=Start-Process -FilePath $ServerExe -ArgumentList "--version" -WorkingDirectory $env:SystemRoot -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+        if($p.ExitCode -ne 0){return $false}
+        $text=((Get-Content -Raw -LiteralPath $out -ErrorAction SilentlyContinue)+(Get-Content -Raw -LiteralPath $err -ErrorAction SilentlyContinue))
         $commitPrefix=$LlamaCommit.Substring(0,8)
         $buildMatches = $text -match [regex]::Escape($LlamaTag) -or $text -match '(?i)build\s+10809'
         return $buildMatches -and $text -match [regex]::Escape($commitPrefix)
-    } catch { return $false }
+    } catch { return $false } finally {Remove-Item -Force -ErrorAction SilentlyContinue $out,$err}
 }
 
 if($env:OS -ne "Windows_NT"){throw "This runtime is for Windows."}
