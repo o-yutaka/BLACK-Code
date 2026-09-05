@@ -138,6 +138,7 @@ function currentVerificationState(state) {
   if (runtimeChanged) {
     state.runtimeHash = environmentHash
     state.verifiedHash = null
+    state.verifiedRuntimeHash = null
     state.token = null
     state.profile = null
     state.priorUnverified = true
@@ -179,9 +180,12 @@ function stateFor(sessionID, fallbackRoot) {
   const current = workspaceFingerprint(root)
   const environmentHash = runtimeFingerprint()
   const prior = loadContinuity(root)
-  const priorMatches = prior?.last_workspace_hash === current && prior?.last_runtime_hash === environmentHash
+  const sameWorkspace = prior?.last_workspace_hash === current
+  const sameRuntime = prior?.last_runtime_hash === environmentHash
+  const priorMatches = sameWorkspace && sameRuntime
   const priorVerified = priorMatches && prior?.last_verified_hash === current && Boolean(prior?.verification_token)
-  const priorUnverified = Boolean(prior?.unverified && priorMatches && !priorVerified)
+  const runtimeChangedSincePrior = Boolean(prior && sameWorkspace && prior?.last_runtime_hash && !sameRuntime)
+  const priorUnverified = Boolean((prior?.unverified && priorMatches && !priorVerified) || runtimeChangedSincePrior)
   state = {
     sessionID: id,
     root,
