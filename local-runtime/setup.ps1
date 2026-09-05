@@ -11,6 +11,10 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $global:LASTEXITCODE = 0
 
+$NativeGuard = Join-Path $PSScriptRoot "assert-native-windows.ps1"
+if (-not (Test-Path -LiteralPath $NativeGuard)) { throw "assert-native-windows.ps1 is missing." }
+. $NativeGuard -Quiet
+
 $InstallBase = Join-Path $env:LOCALAPPDATA "BLACK-Code"
 $RuntimeDir = Join-Path $InstallBase "runtime"
 $LauncherDir = Join-Path $InstallBase "launcher"
@@ -151,7 +155,6 @@ function Test-LlamaPinned([string]$ServerExe,[string]$QuantizeExe) {
     } catch { return $false } finally {Remove-Item -Force -ErrorAction SilentlyContinue $out,$err}
 }
 
-if($env:OS -ne "Windows_NT"){throw "This runtime is for Windows."}
 New-Item -ItemType Directory -Force -Path $RuntimeDir,$LauncherDir,$BinDir,$LlamaDir,$ModelDir,$DownloadDir,$LogDir|Out-Null
 Write-Step "Checking NVIDIA GPU";Require-Command "nvidia-smi.exe" "Install or update the NVIDIA driver first.";$gpuInfo=Invoke-NvidiaSmi "name,memory.total";Write-Host $gpuInfo
 Write-Step "Checking curl / Node / Python / Git";Require-Command "curl.exe" "Windows 10/11 normally includes curl.exe.";Require-Command "node.exe" "Install Node.js LTS.";Require-Command "python.exe" "Install Python 3.";Require-Command "git.exe" "Install Git for Windows."
@@ -231,13 +234,13 @@ Write-Host "MTP draft HASH VERIFIED: $DraftFile" -ForegroundColor Green
 foreach($legacy in $LegacyModelPaths){if(Test-Path -LiteralPath $legacy){Remove-Item -Force $legacy;Write-Host "Removed superseded model: $legacy"}}
 
 Write-Step "Installing BLACK Code launcher"
-$launcherFiles=@("black-code.ps1","setup.ps1","doctor.ps1","execution-fabric.ps1","repo-index.ps1","rule-bridge.ps1","verification-gate.ps1","hf-parallel-download.ps1","build-model-7.27.ps1","extract-quant-map.mjs","model-7.27.lock.json","runtime.lock.json","black-code-execution.md","analyze-bottleneck.ps1","opencode-telemetry.js","opencode-governor.js","verify.ps1")
+$launcherFiles=@("black-code.ps1","black-code-native.ps1","setup.ps1","doctor.ps1","assert-native-windows.ps1","execution-fabric.ps1","repo-index.ps1","rule-bridge.ps1","verification-gate.ps1","hf-parallel-download.ps1","build-model-7.27.ps1","extract-quant-map.mjs","model-7.27.lock.json","runtime.lock.json","black-code-execution.md","analyze-bottleneck.ps1","opencode-telemetry.js","opencode-governor.js","verify.ps1")
 foreach($name in $launcherFiles){$source=Join-Path $PSScriptRoot $name;if(-not(Test-Path $source)){throw "Required runtime source missing: $source"};Copy-Item -Force $source (Join-Path $LauncherDir $name)}
 
 $globalPluginDir=Join-Path $env:USERPROFILE ".config\opencode\plugins"
 Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $globalPluginDir "black-code-telemetry.js"),(Join-Path $globalPluginDir "black-code-governor.js")
 
-$Shim=Join-Path $BinDir "black-code.cmd";$InstalledLauncher=Join-Path $LauncherDir "black-code.ps1";$shimText="@echo off`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$InstalledLauncher`" %*`r`n";Set-Content -Encoding ASCII -Path $Shim -Value $shimText
+$Shim=Join-Path $BinDir "black-code.cmd";$InstalledLauncher=Join-Path $LauncherDir "black-code-native.ps1";$shimText="@echo off`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$InstalledLauncher`" %*`r`n";Set-Content -Encoding ASCII -Path $Shim -Value $shimText
 $VerifyShim=Join-Path $BinDir "black-code-verify.cmd";$InstalledVerify=Join-Path $LauncherDir "verification-gate.ps1";$verifyShimText="@echo off`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$InstalledVerify`" %*`r`n";Set-Content -Encoding ASCII -Path $VerifyShim -Value $verifyShimText
 $userPath=[Environment]::GetEnvironmentVariable("Path","User");if([string]::IsNullOrWhiteSpace($userPath)){$userPath=""};$parts=$userPath.Split(';')|Where-Object{-not[string]::IsNullOrWhiteSpace($_)};if($parts -notcontains $BinDir){[Environment]::SetEnvironmentVariable("Path",(($parts+$BinDir)-join ';'),"User")};Refresh-Path
 
@@ -279,6 +282,7 @@ $state=[ordered]@{
     forced_cache_reuse=$false
     hf_parallel_workers=$HfDownloadWorkers
     default_context="auto-8192-12288-16384"
+    host_boundary="native-windows-no-docker-no-wsl"
 }
 $state|ConvertTo-Json -Depth 8|Set-Content -Encoding UTF8 (Join-Path $RuntimeDir "state.json")
-Write-Host "";Write-Host "BLACK CODE 7.27 LOCAL RUNTIME VERIFIED" -ForegroundColor Green;Write-Host "Open a new terminal in any code repository and run:";Write-Host "";Write-Host "    black-code" -ForegroundColor Yellow
+Write-Host "";Write-Host "BLACK CODE 7.27 LOCAL RUNTIME VERIFIED" -ForegroundColor Green;Write-Host "Open a new native Windows terminal in any code repository and run:";Write-Host "";Write-Host "    black-code" -ForegroundColor Yellow
