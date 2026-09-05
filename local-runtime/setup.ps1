@@ -1,6 +1,8 @@
 param(
     [switch]$Force,
     [switch]$ForceLlama,
+    [string]$ModelWorkDir = (Join-Path $env:LOCALAPPDATA "BLACK-Code\model-build-7.27"),
+    [switch]$PurgeModelDownloadCache,
     [ValidateRange(1, 16)][int]$HfDownloadWorkers = 8
 )
 
@@ -29,7 +31,7 @@ $ModelPath = Join-Path $ModelDir $ModelFile
 $ModelManifestPath = Join-Path $ModelDir "model-7.27.local.json"
 $DraftFile = [string]$ModelLock.mtp_draft.file
 $DraftPath = Join-Path $ModelDir $DraftFile
-$DraftUrl = "https://huggingface.co/$($ModelLock.mtp_draft.repo)/resolve/$($ModelLock.mtp_draft.revision)/$DraftFile?download=true"
+$DraftUrl = "https://huggingface.co/" + [string]$ModelLock.mtp_draft.repo + "/resolve/" + [string]$ModelLock.mtp_draft.revision + "/" + $DraftFile + "?download=true"
 $DraftSha256 = [string]$ModelLock.mtp_draft.sha256
 $OpenCodeVersion = [string]$RuntimeLock.opencode.version
 $LlamaTag = [string]$RuntimeLock.llama_cpp.binary_tag
@@ -158,8 +160,15 @@ Write-Step "Building fixed BLACK 7.27 GB uncensored model"
 if($Force -or -not(Test-CanonicalModel)){
     $builder=Join-Path $PSScriptRoot "build-model-7.27.ps1"
     if(-not(Test-Path -LiteralPath $builder)){throw "build-model-7.27.ps1 is missing."}
-    if($Force){& $builder -ModelDir $ModelDir -LlamaBinDir $LlamaDir -HfDownloadWorkers $HfDownloadWorkers -ForceRebuild}
-    else{& $builder -ModelDir $ModelDir -LlamaBinDir $LlamaDir -HfDownloadWorkers $HfDownloadWorkers}
+    $builderArgs=@{
+        ModelDir=$ModelDir
+        LlamaBinDir=$LlamaDir
+        WorkDir=$ModelWorkDir
+        HfDownloadWorkers=$HfDownloadWorkers
+    }
+    if($Force){$builderArgs.ForceRebuild=$true}
+    if($PurgeModelDownloadCache){$builderArgs.PurgeDownloadCache=$true}
+    & $builder @builderArgs
     if($LASTEXITCODE -ne 0){throw "BLACK 7.27 model build failed with exit code $LASTEXITCODE"}
 }
 if(-not(Test-CanonicalModel)){throw "BLACK 7.27 canonical model failed manifest/hash/size verification."}
@@ -168,7 +177,7 @@ Write-Host "Canonical model: $ModelFile" -ForegroundColor Green
 Write-Host "Size: $($modelManifest.model_size_decimal_gb) GB / SHA256: $($modelManifest.model_sha256)"
 
 Write-Step "Downloading fixed Uncensored MTP draft from Hugging Face"
-if($Force -or -not(Test-Draft)){
+if(-not(Test-Draft)){
     if(Test-Path -LiteralPath $DraftPath){Move-Item -Force $DraftPath "$DraftPath.invalid"}
     & $hfDownloader -Url $DraftUrl -Destination $DraftPath -Workers $HfDownloadWorkers
     if($LASTEXITCODE -ne 0){throw "MTP draft download failed with exit code $LASTEXITCODE"}
@@ -206,6 +215,7 @@ $state=[ordered]@{
     model_role="canonical-fixed"
     model_parent_revision=$modelManifest.parent_revision
     model_manifest=$ModelManifestPath
+    model_work_dir=$ModelWorkDir
     mtp_draft=$DraftFile
     mtp_draft_sha256=$DraftSha256
     mtp_draft_path=$DraftPath
