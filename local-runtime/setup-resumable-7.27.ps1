@@ -3,7 +3,10 @@ param(
     [switch]$ForceLlama,
     [string]$ModelWorkDir = (Join-Path $env:LOCALAPPDATA "BLACK-Code\model-build-7.27"),
     [switch]$PurgeModelDownloadCache,
-    [ValidateRange(1,16)][int]$HfDownloadWorkers = 8
+    [ValidateRange(1,16)][int]$HfDownloadWorkers = 8,
+    [ValidateRange(60,7200)][int]$ParentStallSeconds = 900,
+    [ValidateRange(0,20)][int]$ParentMaxStallRestarts = 4,
+    [ValidateRange(1,300)][int]$ParentRetryBackoffSeconds = 10
 )
 
 Set-StrictMode -Version Latest
@@ -38,7 +41,11 @@ function Test-CanonicalModelPresent {
 $hasCanonical = Test-CanonicalModelPresent
 if (-not $PurgeModelDownloadCache -and ($Force -or -not $hasCanonical)) {
     Write-Host "==> Preparing resumable BLACK 7.27 parent snapshot" -ForegroundColor Cyan
-    & $Prepare -WorkDir $ModelWorkDir
+    & $Prepare `
+        -WorkDir $ModelWorkDir `
+        -StallSeconds $ParentStallSeconds `
+        -MaxStallRestarts $ParentMaxStallRestarts `
+        -RetryBackoffSeconds $ParentRetryBackoffSeconds
     if ($LASTEXITCODE -ne 0) { throw "Parent preload failed with exit code $LASTEXITCODE" }
 } elseif ($hasCanonical -and -not $Force) {
     Write-Host "==> Canonical BLACK 7.27 model already verified; parent preload skipped" -ForegroundColor Green
