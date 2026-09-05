@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "phase": "EXAMPLE",
+  "status": "NOT_RUNTIME_STATE",
+  "updated_at": null,
+  "work_dir": null,
+  "parent_snapshot_complete": false,
+  "f16_verified": false,
+  "quantization_started": false,
+  "quantization_verified": false,
+  "manifest_verified": false,
+  "model_sha256": null,
+  "model_bytes": null,
+  "detail": "Runtime state is written to model-build-7.27/model-pipeline-state.json."
+}
