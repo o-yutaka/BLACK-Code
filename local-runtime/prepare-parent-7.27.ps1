@@ -137,7 +137,7 @@ if ($existing.complete) {
     exit 0
 }
 
-$active = Get-ActiveParentTransfers
+$active = @(Get-ActiveParentTransfers)
 if ($active.Count -gt 0) {
     $sourcePattern = [regex]::Escape($SourceDir)
     $matching = @($active | Where-Object { $_.CommandLine -match $sourcePattern })
