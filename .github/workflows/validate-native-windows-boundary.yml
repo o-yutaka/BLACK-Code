@@ -37,34 +37,40 @@ jobs:
           Remove-Item Env:WSL_INTEROP -ErrorAction SilentlyContinue
           Remove-Item Env:WSL_DISTRO_NAME -ErrorAction SilentlyContinue
           ./local-runtime/assert-native-windows.ps1 -Quiet
-      - name: WSL interop marker is rejected
+      - name: WSL interop marker is allowed
         shell: powershell
         run: |
           $env:WSL_INTEROP = '/run/WSL/fixture_interop'
-          $failed = $false
-          try { ./local-runtime/assert-native-windows.ps1 -Quiet } catch { $failed = $true; Write-Host $_.Exception.Message }
+          ./local-runtime/assert-native-windows.ps1 -Quiet
           Remove-Item Env:WSL_INTEROP -ErrorAction SilentlyContinue
-          if (-not $failed) { throw 'native boundary accepted WSL_INTEROP' }
-      - name: WSL distro marker is rejected
+      - name: WSL distro marker is allowed
         shell: powershell
         run: |
           $env:WSL_DISTRO_NAME = 'fixture-wsl'
-          $failed = $false
-          try { ./local-runtime/assert-native-windows.ps1 -Quiet } catch { $failed = $true; Write-Host $_.Exception.Message }
+          ./local-runtime/assert-native-windows.ps1 -Quiet
           Remove-Item Env:WSL_DISTRO_NAME -ErrorAction SilentlyContinue
-          if (-not $failed) { throw 'native boundary accepted WSL_DISTRO_NAME' }
-      - name: Native CMD entrypoint rejects WSL before setup
-        shell: cmd
+      - name: Native CMD entrypoint does not pre-reject WSL markers
+        shell: powershell
         run: |
-          set WSL_INTEROP=fixture
-          call local-runtime\BLACK-Code-Native.cmd
-          if not errorlevel 1 exit /b 1
-          exit /b 0
+          $cmd = Get-Content -Raw ./local-runtime/BLACK-Code-Native.cmd
+          if ($cmd -match 'if defined WSL_INTEROP' -or $cmd -match 'if defined WSL_DISTRO_NAME') {
+            throw 'native CMD entrypoint still rejects WSL control'
+          }
+      - name: Docker ancestry rejection contract is present
+        shell: powershell
+        run: |
+          $guard = Get-Content -Raw ./local-runtime/assert-native-windows.ps1
+          foreach ($required in @('Docker-controlled execution detected','Docker Desktop','com\.docker','\\docker\.exe')) {
+            if (-not $guard.Contains($required)) { throw "Docker rejection contract missing: $required" }
+          }
+          if ($guard.Contains('intentionally refuses WSL-to-Windows bridge execution')) {
+            throw 'WSL rejection contract is still present'
+          }
       - name: Setup installs guarded launcher
         shell: powershell
         run: |
           $setup = Get-Content -Raw ./local-runtime/setup.ps1
-          foreach ($required in @('assert-native-windows.ps1','black-code-native.ps1','host_boundary="native-windows-no-docker-no-wsl"')) {
+          foreach ($required in @('assert-native-windows.ps1','black-code-native.ps1')) {
             if (-not $setup.Contains($required)) { throw "setup native-boundary contract missing: $required" }
           }
           if ($setup -notmatch '\$InstalledLauncher=Join-Path \$LauncherDir "black-code-native\.ps1"') {
