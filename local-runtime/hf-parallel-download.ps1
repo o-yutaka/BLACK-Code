@@ -51,14 +51,14 @@ Remove-Item -Force -ErrorAction SilentlyContinue $probeHeaders, $probeBody
 
 if ($null -eq $totalBytes -or $totalBytes -le 1 -or $Workers -le 1) {
     Download-Sequential $curl $Url $Destination
-    exit 0
+    return
 }
 
 $actualWorkers = [Math]::Min($Workers, [int][Math]::Ceiling($totalBytes / 67108864.0))
 $actualWorkers = [Math]::Max(1, $actualWorkers)
 if ($actualWorkers -le 1) {
     Download-Sequential $curl $Url $Destination
-    exit 0
+    return
 }
 
 New-Item -ItemType Directory -Force -Path $chunkRoot | Out-Null
@@ -105,7 +105,7 @@ foreach ($job in $jobs) {
 if ($failed) {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $chunkRoot
     Download-Sequential $curl $Url $Destination
-    exit 0
+    return
 }
 
 $out = [System.IO.File]::Open($partial, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
