@@ -5,14 +5,14 @@ This directory is the canonical Windows local coding runtime for BLACK Code.
 ## Canonical architecture
 
 ```text
-OpenCode TUI
+OpenCode 1.18.28 (pinned)
   -> BLACK execution instructions + repo delta context + Claude/BLACK rule bridge
-  -> Qwen3.8-27B Uncensored BLACK 7.27 through llama.cpp CUDA
+  -> Qwen3.8-27B Uncensored BLACK 7.27 through pinned llama.cpp b10809 CUDA 12.4
   -> external Uncensored Q4_0 MTP draft, max 2
   -> project-local tools
-  -> affected verification
+  -> untracked-aware affected verification
   -> black-code-verify final gate
-  -> workspace-hash-bound completion governor
+  -> workspace + runtime bound completion governor
   -> telemetry / bottleneck / session evidence
 ```
 
@@ -32,6 +32,21 @@ BLACK Code has one canonical main model:
 - vision: absent
 
 The former 10.6 GB IQ2_M model is superseded. Setup does not silently fall back to it.
+
+## Pinned runtime policy
+
+BLACK Code does not install "whatever is latest today". `runtime.lock.json` fixes the executable environment used by the coding runtime:
+
+```text
+OpenCode          1.18.28
+llama.cpp         b10809 (v0.4.0 line)
+llama commit      5266f24da75dc449bd56cbed7addb9c8e4a6a73e
+CUDA              12.4 / Windows x64
+main ZIP SHA256   c77bfcd9ed8d91e8721a2d6a290b907fddd4fa5412a47b21c6fa1709116b85f9
+cudart SHA256     8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6
+```
+
+Setup enforces those versions and verifies both llama.cpp ZIP hashes before extraction. Doctor rejects version drift.
 
 ## How the first build works
 
@@ -114,16 +129,19 @@ Independent CPU-side reads, indexing, hashing and checks may be parallelized. Lo
 INDEX -> RULES -> DELTA -> BATCH -> EDIT
       -> STRUCTURAL_OK -> RESOLVE
       -> AFFECTED_VERIFY -> FINAL_VERIFY
+      -> WORKSPACE_HASH + RUNTIME_HASH
       -> HASH_BIND -> RECORD
 ```
 
 `STRUCTURAL_OK` is never completion evidence. `black-code-verify` selects the strongest standard project checks it can find; when that is insufficient it returns `BLOCKED` until a real task-specific runtime command is supplied.
 
-`opencode-governor.js` binds successful final verification to the current workspace fingerprint. Later edits invalidate the token, unverified state survives restarts, and identical failed shell commands against the same workspace state are rejected.
+`opencode-governor.js` binds successful final verification to both the current workspace and relevant runtime environment. The runtime fingerprint covers the installed runtime state, local model manifest, verifier, governor, project rules/instructions and observable runtime versions. Later project edits or relevant runtime/model/rule/verifier changes invalidate the token, including across sessions. Identical failed shell commands against the exact same workspace + runtime state are rejected.
 
 ## Repository context
 
-`repo-index.ps1` persists HEAD, changed files, package roots, test files and likely affected tests. `rule-bridge.ps1` imports compatible `CLAUDE.md`, `CLAUDE.local.md`, `BLACK.md` and non-fenced `@file` references. OpenCode's native skill discovery remains authoritative; BLACK Code does not duplicate it.
+`repo-index.ps1` v2 persists HEAD, tracked delta, **untracked/new files**, package roots, test files and likely affected tests. A newly created source or test file is first-class delta and cannot be hidden by `git status -uno` behavior.
+
+`rule-bridge.ps1` imports compatible `CLAUDE.md`, `CLAUDE.local.md`, `BLACK.md` and non-fenced `@file` references. OpenCode's native skill discovery remains authoritative; BLACK Code does not duplicate it.
 
 ## Diagnostics
 
@@ -131,6 +149,6 @@ INDEX -> RULES -> DELTA -> BATCH -> EDIT
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\BLACK-Code\launcher\doctor.ps1"
 ```
 
-Doctor exits non-zero if the fixed model, its local SHA manifest, MTP draft, governed runtime components or canonical state are invalid.
+Doctor exits non-zero if the fixed model, local model SHA manifest, MTP draft, pinned OpenCode/llama.cpp runtime, governed components or canonical state are invalid.
 
 The model server binds only to `127.0.0.1`; outside-project access remains approval-gated.
