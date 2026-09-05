@@ -21,7 +21,9 @@ jobs:
         run: |
           $files = @(
             './local-runtime/assert-native-windows.ps1',
-            './local-runtime/setup-resumable-7.27.ps1'
+            './local-runtime/setup-resumable-7.27.ps1',
+            './local-runtime/setup.ps1',
+            './local-runtime/black-code-native.ps1'
           )
           foreach ($file in $files) {
             $tokens = $null
@@ -58,3 +60,13 @@ jobs:
           call local-runtime\BLACK-Code-Native.cmd
           if not errorlevel 1 exit /b 1
           exit /b 0
+      - name: Setup installs guarded launcher
+        shell: powershell
+        run: |
+          $setup = Get-Content -Raw ./local-runtime/setup.ps1
+          foreach ($required in @('assert-native-windows.ps1','black-code-native.ps1','host_boundary="native-windows-no-docker-no-wsl"')) {
+            if (-not $setup.Contains($required)) { throw "setup native-boundary contract missing: $required" }
+          }
+          if ($setup -notmatch '\$InstalledLauncher=Join-Path \$LauncherDir "black-code-native\.ps1"') {
+            throw 'black-code shim is not routed through black-code-native.ps1'
+          }
