@@ -160,15 +160,15 @@ Write-Step "Building fixed BLACK 7.27 GB uncensored model"
 if($Force -or -not(Test-CanonicalModel)){
     $builder=Join-Path $PSScriptRoot "build-model-7.27.ps1"
     if(-not(Test-Path -LiteralPath $builder)){throw "build-model-7.27.ps1 is missing."}
-    $builderArgs=@{
-        ModelDir=$ModelDir
-        LlamaBinDir=$LlamaDir
-        WorkDir=$ModelWorkDir
-        HfDownloadWorkers=$HfDownloadWorkers
+    if($Force -and $PurgeModelDownloadCache){
+        & $builder -ModelDir $ModelDir -LlamaBinDir $LlamaDir -WorkDir $ModelWorkDir -HfDownloadWorkers $HfDownloadWorkers -ForceRebuild -PurgeDownloadCache
+    } elseif($Force) {
+        & $builder -ModelDir $ModelDir -LlamaBinDir $LlamaDir -WorkDir $ModelWorkDir -HfDownloadWorkers $HfDownloadWorkers -ForceRebuild
+    } elseif($PurgeModelDownloadCache) {
+        & $builder -ModelDir $ModelDir -LlamaBinDir $LlamaDir -WorkDir $ModelWorkDir -HfDownloadWorkers $HfDownloadWorkers -PurgeDownloadCache
+    } else {
+        & $builder -ModelDir $ModelDir -LlamaBinDir $LlamaDir -WorkDir $ModelWorkDir -HfDownloadWorkers $HfDownloadWorkers
     }
-    if($Force){$builderArgs.ForceRebuild=$true}
-    if($PurgeModelDownloadCache){$builderArgs.PurgeDownloadCache=$true}
-    & $builder @builderArgs
     if($LASTEXITCODE -ne 0){throw "BLACK 7.27 model build failed with exit code $LASTEXITCODE"}
 }
 if(-not(Test-CanonicalModel)){throw "BLACK 7.27 canonical model failed manifest/hash/size verification."}
