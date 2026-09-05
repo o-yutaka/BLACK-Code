@@ -1,6 +1,7 @@
 param(
     [switch]$Force,
-    [switch]$ForceLlama
+    [switch]$ForceLlama,
+    [ValidateRange(1, 16)][int]$HfDownloadWorkers = 8
 )
 
 Set-StrictMode -Version Latest
@@ -16,7 +17,6 @@ $LlamaDir = Join-Path $RuntimeDir "llama"
 $ModelDir = Join-Path $RuntimeDir "models"
 $DownloadDir = Join-Path $RuntimeDir "downloads"
 $LogDir = Join-Path $RuntimeDir "logs"
-$OpenCodePluginDir = Join-Path $env:USERPROFILE ".config\opencode\plugins"
 
 $ModelRepo = "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
 $ModelFile = "Qwen3.8-27B-Uncensored-IQ2_M.gguf"
@@ -53,7 +53,7 @@ function Test-Model([string]$Path){
 }
 
 if($env:OS -ne "Windows_NT"){throw "This runtime is for Windows."}
-New-Item -ItemType Directory -Force -Path $RuntimeDir,$LauncherDir,$BinDir,$LlamaDir,$ModelDir,$DownloadDir,$LogDir,$OpenCodePluginDir|Out-Null
+New-Item -ItemType Directory -Force -Path $RuntimeDir,$LauncherDir,$BinDir,$LlamaDir,$ModelDir,$DownloadDir,$LogDir|Out-Null
 Write-Step "Checking NVIDIA GPU";Require-Command "nvidia-smi.exe" "Install or update the NVIDIA driver first.";$gpuInfo=Invoke-NvidiaSmi "name,memory.total";Write-Host $gpuInfo
 Write-Step "Checking curl";Require-Command "curl.exe" "Windows 10/11 normally includes curl.exe."
 Write-Step "Installing OpenCode if needed";Refresh-Path
@@ -78,19 +78,55 @@ if($Force -or $ForceLlama -or -not(Test-Path $ServerExe)){
 }
 if(-not(Test-Path $ServerExe)){throw "llama-server.exe installation did not complete."};& $ServerExe --version;if($LASTEXITCODE -ne 0){throw "llama-server.exe exists but failed to run."}
 
-Write-Step "Downloading Qwen3.8-27B Uncensored IQ2_M"
-if($Force -or -not(Test-Model $ModelPath)){if(Test-Path $ModelPath){Move-Item -Force $ModelPath "$ModelPath.invalid"};Download-File $ModelUrl $ModelPath}
+Write-Step "Downloading Qwen3.8-27B Uncensored IQ2_M from Hugging Face"
+if($Force -or -not(Test-Model $ModelPath)){
+    if(Test-Path $ModelPath){Move-Item -Force $ModelPath "$ModelPath.invalid"}
+    $hfDownloader=Join-Path $PSScriptRoot "hf-parallel-download.ps1"
+    if(-not(Test-Path -LiteralPath $hfDownloader)){throw "hf-parallel-download.ps1 is missing from BLACK Code runtime."}
+    & $hfDownloader -Url $ModelUrl -Destination $ModelPath -Workers $HfDownloadWorkers
+    if($LASTEXITCODE -ne 0){throw "Hugging Face model download failed with exit code $LASTEXITCODE"}
+}
 Write-Host "Verifying GGUF SHA-256...";if(-not(Test-Model $ModelPath)){throw "Model verification failed. Expected SHA256 $ModelSha256"};$modelSize=[Math]::Round((Get-Item $ModelPath).Length/1GB,2);Write-Host "Model verified: $ModelFile ($modelSize GiB)"
 if(Test-Path $LegacyModelPath){Remove-Item -Force $LegacyModelPath;Write-Host "Removed superseded IQ4_XS model file."}
 
 Write-Step "Installing BLACK Code launcher"
-$launcherFiles=@("black-code.ps1","setup.ps1","doctor.ps1","execution-fabric.ps1","repo-index.ps1","black-code-execution.md","analyze-bottleneck.ps1","opencode-telemetry.js","verify.ps1")
-foreach($name in $launcherFiles){$source=Join-Path $PSScriptRoot $name;if(Test-Path $source){Copy-Item -Force $source (Join-Path $LauncherDir $name)}}
-$telemetrySource=Join-Path $PSScriptRoot "opencode-telemetry.js";if(Test-Path $telemetrySource){Copy-Item -Force $telemetrySource (Join-Path $OpenCodePluginDir "black-code-telemetry.js")}
+$launcherFiles=@("black-code.ps1","setup.ps1","doctor.ps1","execution-fabric.ps1","repo-index.ps1","rule-bridge.ps1","verification-gate.ps1","hf-parallel-download.ps1","black-code-execution.md","analyze-bottleneck.ps1","opencode-telemetry.js","opencode-governor.js","verify.ps1")
+foreach($name in $launcherFiles){$source=Join-Path $PSScriptRoot $name;if(-not(Test-Path $source)){throw "Required runtime source missing: $source"};Copy-Item -Force $source (Join-Path $LauncherDir $name)}
+
+# BLACK Code plugins are loaded explicitly by the runtime config. Remove superseded global copies so normal OpenCode sessions are untouched.
+$globalPluginDir=Join-Path $env:USERPROFILE ".config\opencode\plugins"
+Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $globalPluginDir "black-code-telemetry.js"),(Join-Path $globalPluginDir "black-code-governor.js")
 
 $Shim=Join-Path $BinDir "black-code.cmd";$InstalledLauncher=Join-Path $LauncherDir "black-code.ps1";$shimText="@echo off`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$InstalledLauncher`" %*`r`n";Set-Content -Encoding ASCII -Path $Shim -Value $shimText
+$VerifyShim=Join-Path $BinDir "black-code-verify.cmd";$InstalledVerify=Join-Path $LauncherDir "verification-gate.ps1";$verifyShimText="@echo off`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$InstalledVerify`" %*`r`n";Set-Content -Encoding ASCII -Path $VerifyShim -Value $verifyShimText
 $userPath=[Environment]::GetEnvironmentVariable("Path","User");if([string]::IsNullOrWhiteSpace($userPath)){$userPath=""};$parts=$userPath.Split(';')|Where-Object{-not[string]::IsNullOrWhiteSpace($_)};if($parts -notcontains $BinDir){[Environment]::SetEnvironmentVariable("Path",(($parts+$BinDir)-join ';'),"User")};Refresh-Path
 
-$state=[ordered]@{installed_at=(Get-Date).ToString("o");model=$ModelFile;model_sha256=$ModelSha256;model_path=$ModelPath;model_size_gib=$modelSize;llama_server=$ServerExe;gpu=($gpuInfo -join "; ");execution_fabric="black-execution-fabric-iq2m-speed-v1";repo_index="persistent-delta-v1";bottleneck_analyzer="observation-only-v1";quantization="IQ2_M";speculative="draft-mtp";mtp_draft_max=2;ngram_mod=$false;forced_cache_reuse=$false;default_context="auto-8192-12288-16384"}
-$state|ConvertTo-Json -Depth 4|Set-Content -Encoding UTF8 (Join-Path $RuntimeDir "state.json")
+$state=[ordered]@{
+    installed_at=(Get-Date).ToString("o")
+    canonical_runtime="opencode-llama-governed-v3"
+    model=$ModelFile
+    model_sha256=$ModelSha256
+    model_path=$ModelPath
+    model_size_gib=$modelSize
+    model_role="verified-baseline"
+    custom_7_27gb_candidate="not-installed-until-built-and-verified"
+    llama_server=$ServerExe
+    gpu=($gpuInfo -join "; ")
+    execution_fabric="black-execution-fabric-governed-v2"
+    repo_index="persistent-delta-v1"
+    rule_bridge="claude-black-compatible-v1"
+    completion_governor="hash-bound-v2"
+    final_verifier="governed-final-v2"
+    bottleneck_analyzer="observation-only-v1"
+    quantization="IQ2_M"
+    speculative="draft-mtp"
+    mtp_draft_max=2
+    local_parallel_slots=1
+    vision=$false
+    ngram_mod=$false
+    forced_cache_reuse=$false
+    hf_parallel_workers=$HfDownloadWorkers
+    default_context="auto-8192-12288-16384"
+}
+$state|ConvertTo-Json -Depth 6|Set-Content -Encoding UTF8 (Join-Path $RuntimeDir "state.json")
 Write-Host "";Write-Host "BLACK CODE LOCAL RUNTIME VERIFIED" -ForegroundColor Green;Write-Host "Open a new terminal in any code repository and run:";Write-Host "";Write-Host "    black-code" -ForegroundColor Yellow
