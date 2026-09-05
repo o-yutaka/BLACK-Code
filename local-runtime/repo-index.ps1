@@ -23,8 +23,8 @@ function Normalize-BlackCodePath([object]$Value) {
     return $text.Replace('\\','/')
 }
 
-function Invoke-BlackCodeGitLines([object]$Git,[string]$Root,[string[]]$Args) {
-    $rows = @(& $Git.Source -C $Root @Args 2>$null)
+function Invoke-BlackCodeGitLines([object]$Git,[string]$Root,[string[]]$GitArgs) {
+    $rows = @(& $Git.Source -C $Root @GitArgs 2>$null)
     if ($LASTEXITCODE -ne 0) { return @() }
     return @($rows | ForEach-Object { Normalize-BlackCodePath $_ } | Where-Object { $_ } | Sort-Object -Unique)
 }
