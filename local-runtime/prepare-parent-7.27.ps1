@@ -70,7 +70,7 @@ function Get-SnapshotStatus([string]$Path) {
     }
 }
 
-function Write-State([string]$Phase,[string]$Status,[Nullable[int]]$HfPid,[string]$Detail) {
+function Write-State([string]$Phase,[string]$Status,[object]$HfPid,[string]$Detail) {
     New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
     $snapshot = Get-SnapshotStatus $SourceDir
     $root = [IO.Path]::GetPathRoot((Resolve-Path -LiteralPath $WorkDir).Path)
@@ -82,7 +82,7 @@ function Write-State([string]$Phase,[string]$Status,[Nullable[int]]$HfPid,[strin
         status = $Status
         windows_host = $true
         controller_pid = $PID
-        hf_pid = if ($HfPid.HasValue) { $HfPid.Value } else { $null }
+        hf_pid = if ($null -ne $HfPid) { [int]$HfPid } else { $null }
         repo = [string]$Lock.uncensored_parent.repo
         revision = [string]$Lock.uncensored_parent.revision
         work_dir = $WorkDir
