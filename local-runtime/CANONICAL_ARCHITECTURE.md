@@ -1,10 +1,10 @@
-# BLACK Code Canonical Architecture v3
+# BLACK Code Canonical Architecture v4
 
 ## Boundary
 
-BLACK Code is the local coding runtime/source-testbed. BLACK is a separate system. Code Knowledge belongs on the BLACK side; BLACK Code may later export verified experience packets, but BLACK Code never imports or mutates BLACK as part of normal coding execution.
+BLACK Code is the local coding runtime/source-testbed. BLACK is a separate system. Code Knowledge belongs on the BLACK side; BLACK Code may later export verified experience packets, but normal coding execution never imports or mutates BLACK.
 
-The older Python Claude-style BLACK Code is a donor/reference implementation, not a second production runtime.
+The older Python Claude-style BLACK Code remains donor/reference only, not a second production runtime.
 
 ## Canonical ownership
 
@@ -12,25 +12,91 @@ The older Python Claude-style BLACK Code is a donor/reference implementation, no
 | --- | --- | --- |
 | terminal coding UI and tool execution | OpenCode | KEEP |
 | local model serving | llama.cpp CUDA | KEEP |
-| 27B uncensored model baseline | Qwen3.8-27B IQ2_M | KEEP until candidate promotion |
+| main model | BLACK 7.27 uncensored custom GGUF | FIXED |
 | local model inference concurrency | one slot | KEEP |
-| speculative decoding | fused MTP max2 baseline | KEEP, re-benchmark per candidate |
+| speculative decoding | external uncensored Q4_0 MTP, max2 | KEEP |
 | repository structure/delta | `repo-index.ps1` | KEEP |
 | affected test hints | `repo-index.ps1` + agent policy | KEEP/strengthen |
 | context/VRAM policy | `black-code.ps1` | KEEP |
 | tool/model bottleneck telemetry | OpenCode telemetry + llama logs | KEEP |
-| Claude/BLACK rule hierarchy | `rule-bridge.ps1` | PORT from donor |
+| Claude/BLACK rule hierarchy | `rule-bridge.ps1` | KEEP |
 | duplicate skill loader | none | DROP; use OpenCode native discovery |
-| donor custom Python TUI | donor/reference only | DROP from canonical runtime |
-| donor custom model router/server | donor/reference only | DROP from canonical runtime |
-| syntax-only post-edit success | `STRUCTURAL_OK` only | DOWNGRADE; never final verification |
+| donor custom Python TUI/router/server | donor/reference only | DROP from canonical runtime |
+| syntax-only post-edit success | `STRUCTURAL_OK` only | NEVER final verification |
 | final verification | `verification-gate.ps1` / `black-code-verify` | CANONICAL |
 | final claim authority | `opencode-governor.js` | CANONICAL |
-| unverified restart continuity | governor state | PORT from donor idea |
-| identical failed retry guard | governor | PORT from donor idea |
-| vision model/sidecar | none | DROP |
-| external advisor | non-canonical optional research | OFF by default |
-| Hugging Face model download | parallel range downloader + SHA | CANONICAL |
+| vision | none | DROP |
+| Hugging Face parent transfer | HF/Xet high performance | CANONICAL |
+| fixed artifact transfer | parallel range downloader + hash | CANONICAL |
+
+## Fixed model
+
+Canonical main model:
+
+```text
+Qwen3.8-27B-Uncensored-BLACK-UD-IQ2_XXS.gguf
+```
+
+Its build identity is locked by `model-7.27.lock.json`:
+
+1. pinned `JonathanColetti/Qwen3.8-27B-Uncensored` parent revision;
+2. pinned no-MTP conversion path;
+3. pinned Unsloth 7.27 GGUF tensor-precision reference revision;
+4. exact tensor-name inventory equality before quantization;
+5. pinned uncensored importance matrix;
+6. current llama quantizer must support `--tensor-type-file`;
+7. dry-run before real quantization;
+8. final GGUF must be between 7.20 and 7.35 GB decimal;
+9. final SHA-256 is written to `model-7.27.local.json` and becomes the local immutable artifact identity.
+
+The 10.6 GB IQ2_M runtime is superseded and is not an automatic fallback.
+
+The main GGUF excludes MTP tensors. Speculative decoding uses the separately pinned `Qwen3.8-27B-Uncensored-draft-Q4_0.gguf` with max draft width 2. Vision is absent.
+
+## Model build path
+
+```text
+PINNED UNCENSORED PARENT
+        |
+        v
+PARALLEL HF/XET SNAPSHOT
+        |
+        v
+PINNED LLAMA CONVERTER --no-mtp
+        |
+        v
+F16 GGUF
+        |
+        +---------------------------+
+        |                           |
+        v                           v
+PINNED 7.27 REFERENCE          PINNED IMATRIX
+Range-only tensor directory         |
+        |                           |
+        +------------+--------------+
+                     v
+             TENSOR INVENTORY EQUAL
+                     |
+                     v
+           EXACT TENSOR TYPE FILE
+                     |
+                     v
+             QUANTIZER DRY RUN
+                     |
+                     v
+                QUANTIZE
+                     |
+                     v
+           7.20..7.35 GB GATE
+                     |
+                     v
+                  SHA256
+                     |
+                     v
+          LOCAL CANONICAL MANIFEST
+```
+
+A Range server returning the full reference instead of HTTP 206 is rejected. BLACK Code never downloads the 7.27 reference in full merely to copy its tensor allocation.
 
 ## Runtime state machine
 
@@ -71,11 +137,11 @@ VERIFICATION_TOKEN
 FINAL/RECORD
 ```
 
-Any mutation after `FINAL_VERIFY` moves the workspace back to DIRTY and invalidates the token.
+Any mutation after final verification invalidates the token.
 
 ## Definition of usable code
 
-For an implementation request, BLACK Code must not equate parseability with usability. The strongest relevant checks available should establish the material parts of:
+For an implementation request, parseability is not usability. The strongest relevant checks available must establish the material parts of:
 
 ```text
 syntax/structure
@@ -85,18 +151,11 @@ AND affected tests/checks
 AND requested entrypoint/runtime behavior when project checks are insufficient
 ```
 
-If the repository has no strong standard verification path, `black-code-verify` returns BLOCKED until a real task-specific `-RuntimeCommand` is supplied. A no-op command cannot satisfy the gate.
+If no strong standard verification path exists, `black-code-verify` returns BLOCKED until a real task-specific `-RuntimeCommand` is supplied. No-op commands cannot satisfy the gate.
 
 ## Completion authority
 
-The model may propose that work is complete, but it has no authority to make that true. `opencode-governor.js` owns final-claim admission:
-
-1. Compute a workspace fingerprint.
-2. Observe successful `black-code-verify` against that state.
-3. Bind a verification token to the workspace fingerprint and verification profile.
-4. Permit final completion only while the current workspace still matches the token.
-5. Persist an unverified marker across restarts when work changed without a current token.
-6. Block identical failed shell retries against the exact same workspace fingerprint.
+The model can propose completion but cannot authorize it. `opencode-governor.js` owns final-claim admission by binding successful final verification to the current workspace fingerprint, invalidating that proof after mutations, preserving unverified continuity across restarts and rejecting identical failed shell retries against the same workspace state.
 
 ## Performance objective
 
@@ -106,45 +165,4 @@ Primary metric:
 verified task latency
 ```
 
-Supporting metrics:
-
-- first-pass verified rate
-- invalid import/API rate
-- tool-call validity
-- retry count
-- TTFT
-- decode tokens/sec
-- MTP acceptance/effect
-- prompt/prefill time
-- tool time
-- verification time
-- peak VRAM / spill
-
-A higher tokens/sec configuration that creates more repair loops is a regression.
-
-## Model promotion
-
-### Baseline
-
-`Qwen3.8-27B-Uncensored-IQ2_M.gguf`, pinned by SHA-256, remains the reference runtime.
-
-### ~7.27 GB candidate
-
-The target is deliberately recorded as a candidate slot rather than a fake canonical filename. Promotion requires an actual GGUF plus reproducible evidence for:
-
-- uncensored behavior retained relative to the chosen parent
-- coding quality within the accepted regression budget
-- tool-use reliability
-- first-pass verified rate
-- verified task latency versus IQ2_M baseline
-- MTP width retest rather than blindly inheriting max2
-- RTX 3060 12 GB VRAM/spill behavior
-- file hash recorded before installer promotion
-
-Only after those gates pass should setup/doctor/model alias be changed to the 7.27 GB artifact.
-
-## Download policy
-
-Hugging Face model download defaults to 8 independent byte-range workers. Every part must match its expected byte length; the joined file must match the probed total length; the final model must still match the pinned GGUF SHA-256. Range failure or unsupported range semantics falls back to resumable sequential download.
-
-Download parallelism changes transfer latency only. It never weakens integrity verification.
+Supporting metrics include first-pass verified rate, invalid import/API rate, tool-call validity, retry count, TTFT, decode tokens/sec, MTP effect, prompt/prefill time, tool time, verification time and VRAM/spill behavior. A faster decoder that produces more repair loops is a regression.

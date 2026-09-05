@@ -20,9 +20,12 @@ $BottleneckDir = Join-Path $RuntimeDir "bottlenecks"
 $GovernorDir = Join-Path $RuntimeDir "governor"
 
 $ServerExe = Join-Path $LlamaDir "llama-server.exe"
-$ModelFile = "Qwen3.8-27B-Uncensored-IQ2_M.gguf"
+$ModelFile = "Qwen3.8-27B-Uncensored-BLACK-UD-IQ2_XXS.gguf"
 $ModelPath = Join-Path $ModelDir $ModelFile
-$ModelAlias = "qwen3.8-27b-uncensored-iq2m"
+$ModelManifestPath = Join-Path $ModelDir "model-7.27.local.json"
+$DraftFile = "Qwen3.8-27B-Uncensored-draft-Q4_0.gguf"
+$DraftPath = Join-Path $ModelDir $DraftFile
+$ModelAlias = "qwen3.8-27b-uncensored-black-7.27"
 $ProviderId = "black-local"
 $ModelId = "$ProviderId/$ModelAlias"
 
@@ -31,49 +34,40 @@ function Refresh-Path {
     $user = [Environment]::GetEnvironmentVariable("Path", "User")
     $env:Path = "$machine;$user;$env:ProgramFiles\nodejs;$env:APPDATA\npm;$BinDir"
 }
-
 function Invoke-NvidiaSmi([string]$Query) {
     $stdout = [IO.Path]::GetTempFileName(); $stderr = [IO.Path]::GetTempFileName()
     try {
         $process = Start-Process -FilePath (Get-Command "nvidia-smi.exe").Source -ArgumentList "--query-gpu=$Query", "--format=csv,noheader,nounits" -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
         $output = (Get-Content -Raw -Path $stdout -ErrorAction SilentlyContinue).Trim()
-        if ($process.ExitCode -ne 0 -or -not $output) {
-            $detail = (Get-Content -Raw -Path $stderr -ErrorAction SilentlyContinue).Trim()
-            throw "nvidia-smi failed with exit code $($process.ExitCode): $detail"
-        }
+        if ($process.ExitCode -ne 0 -or -not $output) { $detail = (Get-Content -Raw -Path $stderr -ErrorAction SilentlyContinue).Trim(); throw "nvidia-smi failed with exit code $($process.ExitCode): $detail" }
         return $output
     }
     finally { Remove-Item -Force -ErrorAction SilentlyContinue $stdout, $stderr }
 }
-
 function Find-FreePort([int]$Start, [int]$End) {
     for ($p = $Start; $p -le $End; $p++) {
-        try { $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $p); $listener.Start(); $listener.Stop(); return $p } catch {}
+        try { $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $p); $listener.Start(); $listener.Stop(); return $p } catch {}
     }
     throw "No free local port found in range $Start-$End."
 }
-
 function Resolve-SetupScript {
     $near = Join-Path $PSScriptRoot "setup.ps1"; if (Test-Path $near) { return $near }
     $installed = Join-Path $LauncherDir "setup.ps1"; if (Test-Path $installed) { return $installed }
     throw "setup.ps1 was not found. Re-clone BLACK-Code or restore the local launcher."
 }
-
 function Resolve-RuntimeFile([string]$Name) {
     $near = Join-Path $PSScriptRoot $Name; if (Test-Path $near) { return (Resolve-Path -LiteralPath $near).Path }
     $installed = Join-Path $LauncherDir $Name; if (Test-Path $installed) { return (Resolve-Path -LiteralPath $installed).Path }
     throw "$Name was not found. Run BLACK Code setup from the latest repository checkout."
 }
-
 function Convert-ToFileUri([string]$Path) {
     $resolved = (Resolve-Path -LiteralPath $Path).Path.Replace('\', '/')
     return "file:///$resolved"
 }
-
 function Ensure-Installed {
     Refresh-Path
     $opencode = Get-Command "opencode" -ErrorAction SilentlyContinue
-    if (-not (Test-Path $ServerExe) -or -not (Test-Path $ModelPath) -or -not $opencode) {
+    if (-not (Test-Path $ServerExe) -or -not (Test-Path $ModelPath) -or -not (Test-Path $ModelManifestPath) -or -not (Test-Path $DraftPath) -or -not $opencode) {
         Write-Host "Local runtime is incomplete. Running BLACK Code setup..." -ForegroundColor Yellow
         & (Resolve-SetupScript)
         if ($LASTEXITCODE -ne 0) { throw "BLACK Code setup failed." }
@@ -85,6 +79,11 @@ Ensure-Installed
 New-Item -ItemType Directory -Force -Path $LogDir, $FabricEvidenceDir, $RepoIndexRoot, $BottleneckDir, $GovernorDir | Out-Null
 . (Resolve-RuntimeFile "execution-fabric.ps1")
 . (Resolve-RuntimeFile "repo-index.ps1")
+
+$modelManifest = Get-Content -Raw -LiteralPath $ModelManifestPath | ConvertFrom-Json
+if ($modelManifest.status -ne "CANONICAL_FIXED" -or $modelManifest.model_file -ne $ModelFile) { throw "BLACK 7.27 local model manifest is not canonical. Run setup.ps1 again." }
+$actualModelBytes = (Get-Item -LiteralPath $ModelPath).Length
+if ($actualModelBytes -ne [int64]$modelManifest.model_bytes) { throw "BLACK 7.27 model size no longer matches its pinned manifest. Run setup.ps1 again." }
 
 $projectRoot = (Get-Location).Path
 $repoIndex = Get-BlackCodeRepoIndex -ProjectRoot $projectRoot -IndexRoot $RepoIndexRoot
@@ -132,7 +131,7 @@ $config = [ordered]@{
         $ProviderId = [ordered]@{
             npm = "@ai-sdk/openai-compatible"; name = "BLACK Code Local Qwen 3.8"
             options = [ordered]@{ baseURL=$BaseUrl; apiKey="local" }
-            models = [ordered]@{ $ModelAlias = [ordered]@{ name="Qwen3.8-27B Uncensored IQ2_M"; reasoning=$false; options=[ordered]@{ chat_template_kwargs=[ordered]@{ enable_thinking=$false } }; limit=[ordered]@{ context=$Context; output=$OutputLimit } } }
+            models = [ordered]@{ $ModelAlias = [ordered]@{ name="Qwen3.8-27B Uncensored BLACK 7.27"; reasoning=$false; options=[ordered]@{ chat_template_kwargs=[ordered]@{ enable_thinking=$false } }; limit=[ordered]@{ context=$Context; output=$OutputLimit } } }
         }
     }
 }
@@ -142,18 +141,31 @@ $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $stdout = Join-Path $LogDir "llama-$timestamp.out.log"; $stderr = Join-Path $LogDir "llama-$timestamp.err.log"
 $telemetryPath = Join-Path $BottleneckDir "tools-$timestamp.jsonl"
 $bottleneckPath = Join-Path $BottleneckDir "bottleneck-$timestamp.json"
-$serverArgs = @("--model",$ModelPath,"--alias",$ModelAlias,"--host","127.0.0.1","--port","$Port","--parallel","1","--ctx-size","$Context","--fit","on","--fit-target","$fitTarget","--fit-ctx","$Context","--cache-type-k","q8_0","--cache-type-v","q8_0","--flash-attn","auto","--spec-type","draft-mtp","--spec-draft-n-max","2","--spec-draft-n-min","0","--spec-draft-p-min","0.0","--jinja")
+$serverArgs = @(
+    "--model",$ModelPath,
+    "--spec-draft-model",$DraftPath,
+    "--alias",$ModelAlias,
+    "--host","127.0.0.1","--port","$Port",
+    "--parallel","1",
+    "--ctx-size","$Context",
+    "--fit","on","--fit-target","$fitTarget","--fit-ctx","$Context",
+    "--cache-type-k","q8_0","--cache-type-v","q8_0",
+    "--flash-attn","auto",
+    "--spec-type","draft-mtp","--spec-draft-n-max","2","--spec-draft-n-min","0","--spec-draft-p-min","0.0",
+    "--jinja"
+)
 
 Write-Host ""
-Write-Host "BLACK CODE - LOCAL QWEN 3.8" -ForegroundColor Magenta
+Write-Host "BLACK CODE - LOCAL QWEN 3.8 / FIXED 7.27" -ForegroundColor Magenta
 Write-Host "Project:   $projectRoot"; Write-Host "GPU:       $gpuName"; Write-Host "VRAM:      $freeVram / $totalVram MiB free"; Write-Host "RAM:       $ramGiB GiB"
 Write-Host "Model:     $ModelFile"; Write-Host "Index:     $($repoIndex.index.cache_status) / $trackedFileCount tracked" -ForegroundColor Green
 Write-Host "Delta:     $(@($repoIndex.index.changed_files).Count) changed / $(@($repoIndex.index.likely_tests).Count) likely tests"
 Write-Host "Rules:     Claude/BLACK bridge active"
 Write-Host "Context:   $Context ($contextReason)"; Write-Host "Output:    $OutputLimit max tokens"
 Write-Host ("VRAM fit:  automatic; {0} MiB target headroom" -f $fitTarget)
-Write-Host "Quant:     IQ2_M 10.6 GB verified baseline" -ForegroundColor Green; Write-Host "Spec:      MTP max 2 ALWAYS ON" -ForegroundColor Green
-Write-Host "N-gram:    OFF"; Write-Host "Cache:     llama default; forced cache-reuse OFF"; Write-Host "Tensor:    automatic; explicit split OFF"
+Write-Host ("Quant:     BLACK UD-IQ2_XXS / {0} GB / locally pinned SHA" -f $modelManifest.model_size_decimal_gb) -ForegroundColor Green
+Write-Host "Draft:     Uncensored Q4_0 MTP / max 2" -ForegroundColor Green
+Write-Host "N-gram:    OFF"; Write-Host "Cache:     llama default; forced cache-reuse OFF"; Write-Host "Tensor:    pinned 7.27 reference precision map"
 Write-Host "Vision:    OFF / no sidecar"
 Write-Host "Governor:  hash-bound final verification" -ForegroundColor Green
 Write-Host "Telemetry: observation-only auto bottleneck" -ForegroundColor Green
@@ -183,7 +195,7 @@ try {
     $models = Invoke-RestMethod -Uri "$BaseUrl/models" -TimeoutSec 10
     if (-not $models.data) { throw "llama-server is healthy but /v1/models returned no model." }
 
-    Write-Host "Local model server VERIFIED with IQ2_M + persistent repo delta index." -ForegroundColor Green
+    Write-Host "Local model server VERIFIED with BLACK 7.27 + external Uncensored MTP2 + persistent repo delta index." -ForegroundColor Green
     Write-Host "Starting OpenCode with BLACK completion governor..." -ForegroundColor Green; Write-Host ""
     $env:OPENCODE_CONFIG = $ConfigPath
     $env:BLACK_CODE_TELEMETRY_PATH = $telemetryPath
@@ -203,12 +215,10 @@ finally {
     if ($null -eq $previousVerifyScript) { Remove-Item Env:BLACK_CODE_VERIFY_SCRIPT -ErrorAction SilentlyContinue } else { $env:BLACK_CODE_VERIFY_SCRIPT = $previousVerifyScript }
     $sessionCompletedAt = Get-Date
     $totalMs = [Math]::Round(($sessionCompletedAt - $sessionStartedAt).TotalMilliseconds)
-    try {
-        & (Resolve-RuntimeFile "analyze-bottleneck.ps1") -TelemetryPath $telemetryPath -LlamaStderr $stderr -StartupMs $startupMs -TotalMs $totalMs -OutputPath $bottleneckPath
-    } catch { Write-Warning "BLACK bottleneck analysis skipped: $($_.Exception.Message)" }
-    try {
-        Write-BlackCodeSessionEvidence -EvidenceDir $FabricEvidenceDir -ProfileEnvelope $profileEnvelope -ProjectIdentity $projectIdentity -StartedAt $sessionStartedAt -CompletedAt $sessionCompletedAt -ExitCode $exitCode -GpuName $gpuName -FreeVramMiB $freeVram -TotalVramMiB $totalVram -StdoutLog $stdout -StderrLog $stderr
-    } catch { Write-Warning "BLACK Execution Fabric evidence write failed: $($_.Exception.Message)" }
+    try { & (Resolve-RuntimeFile "analyze-bottleneck.ps1") -TelemetryPath $telemetryPath -LlamaStderr $stderr -StartupMs $startupMs -TotalMs $totalMs -OutputPath $bottleneckPath }
+    catch { Write-Warning "BLACK bottleneck analysis skipped: $($_.Exception.Message)" }
+    try { Write-BlackCodeSessionEvidence -EvidenceDir $FabricEvidenceDir -ProfileEnvelope $profileEnvelope -ProjectIdentity $projectIdentity -StartedAt $sessionStartedAt -CompletedAt $sessionCompletedAt -ExitCode $exitCode -GpuName $gpuName -FreeVramMiB $freeVram -TotalVramMiB $totalVram -StdoutLog $stdout -StderrLog $stderr }
+    catch { Write-Warning "BLACK Execution Fabric evidence write failed: $($_.Exception.Message)" }
 }
 
 exit $exitCode

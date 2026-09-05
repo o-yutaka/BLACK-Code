@@ -1,11 +1,16 @@
-# BLACK Code governed speed profile v3
+# BLACK Code governed speed profile v4
 
-Canonical objective: minimize **verified task latency**, not raw token latency.
+Canonical objective: minimize **verified task latency**, not raw tokens/sec.
 
-## Verified baseline
+## Fixed canonical model
 
-- model: Qwen3.8-27B Uncensored IQ2_M (~10.6 GB)
-- MTP speculative decoding: on
+- main: `Qwen3.8-27B-Uncensored-BLACK-UD-IQ2_XXS.gguf`
+- size gate: 7.20..7.35 GB decimal; target profile is 7.27 GB-class
+- source: pinned JonathanColetti uncensored parent
+- precision allocation: pinned Unsloth 7.27 reference tensor map
+- imatrix: pinned uncensored imatrix
+- main MTP tensors: excluded
+- external draft: fixed uncensored Q4_0 MTP GGUF
 - MTP draft max: 2
 - local model parallel slots: 1
 - repository-sized context on 12 GB GPUs: 8,192 / 12,288 / 16,384
@@ -13,40 +18,37 @@ Canonical objective: minimize **verified task latency**, not raw token latency.
 - KV K/V: q8_0 / q8_0
 - `ngram-mod`: off
 - forced `cache-reuse`: off
-- explicit tensor split: off
 - thinking: off
-- vision sidecar: off
+- vision: off
 - repo delta index: on
 - governed final verification: on
 - bottleneck telemetry: observation-only
 
-## Why the 10.6 GB baseline stays
+## No IQ2_M fallback
 
-The existing IQ2_M GGUF has a pinned SHA-256 and known runtime contract. The planned ~7.27 GB uncensored build remains a candidate until the actual GGUF exists and beats or acceptably matches this baseline on coding quality, uncensored-regression, tool reliability, VRAM and end-to-end verified task latency. BLACK Code never promotes a filename or size target as if it were a verified artifact.
+The former 10.6 GB IQ2_M artifact is superseded. BLACK Code no longer treats it as the runtime baseline or an automatic recovery path. If the 7.27 canonical file is absent or invalid, setup rebuilds the fixed 7.27 model from its locked inputs instead of silently changing the model class.
 
-## Why MTP2 stays
+## MTP2
 
-The current IQ2_M code benchmark used for BLACK Code's prior tuning favored `draft-mtp n_max=2` among the tested widths. MTP4 is therefore superseded history rather than the current default. Any future 7.27 GB candidate must re-run the same measured comparison instead of inheriting MTP2 by assumption.
+MTP max2 remains the runtime default inherited from the prior measured BLACK Code profile, but it now uses the separate pinned uncensored Q4_0 draft because the main 7.27 model is built `--no-mtp`. Telemetry remains the authority for future speed changes; a larger draft width is not enabled merely because it exists.
 
-## Why auto context stays
+## Auto context
 
-Small repositories should not pay full KV/prefill cost. BLACK Code counts tracked files at launch: <=150 uses 8K, <=800 uses 12K, larger/unknown repositories use 16K on a 12 GB GPU. `-Context` remains an explicit override.
+Small repositories should not pay full KV/prefill cost. On the 12 GB canonical GPU, <=150 tracked files uses 8K, <=800 uses 12K, and larger/unknown repositories use 16K. `-Context` remains an explicit override.
 
-## Model and CPU concurrency
+## Concurrency
 
-The RTX 3060 12 GB canonical path keeps one active 27B inference slot. Independent CPU-side indexing, hashing, reads, searches, checks and Hugging Face byte-range downloads may run concurrently when dependency-safe.
-
-Hugging Face model setup defaults to 8 concurrent HTTP range workers, validates every range and the joined byte count, then performs the pinned GGUF SHA-256 verification. Unsupported/failed range mode falls back to resumable single-stream download.
+The RTX 3060 12 GB path keeps one active 27B inference slot. Independent CPU-side indexing, hashing, reads, searches and checks may run concurrently. Hugging Face parent transfer uses high-performance Xet; standalone large files use up to 8 BLACK range workers by default.
 
 ## Governed completion
 
-A fast invalid answer is a regression. The runtime distinguishes:
+A fast invalid answer is a regression:
 
 ```text
 STRUCTURAL_OK != VERIFIED
 ```
 
-The canonical completion path is:
+Canonical completion:
 
 ```text
 INDEX -> RULES -> DELTA -> BATCH -> EDIT
@@ -55,16 +57,14 @@ INDEX -> RULES -> DELTA -> BATCH -> EDIT
       -> HASH_BIND -> RECORD
 ```
 
-`black-code-verify` must pass after the final edit. The completion governor binds that success to the current workspace fingerprint, and any later edit invalidates it. Repeating an identical failed command against the same workspace state is rejected.
+The final verification must run after the final mutation. Any later edit invalidates the completion token.
 
 ## Rejected/superseded atoms
 
-- IQ4_XS runtime profile: superseded by IQ2_M baseline
-- MTP4 on IQ2_M: superseded by measured MTP2 baseline
+- IQ2_M canonical runtime: superseded by fixed BLACK 7.27
+- IQ4_XS runtime: superseded
+- MTP4 default: not promoted
 - `ngram-mod`: rejected after agentic regression
-- forced `cache-reuse`: rejected/unproven for the canonical path
-- explicit tensor split: not canonical
+- forced `cache-reuse`: rejected/unproven for canonical path
 - parallel local 27B inference: rejected for 12 GB canonical hardware
-- vision sidecar: removed from the text/code canonical runtime
-
-Static and executable runtime verification must keep these contracts distinct from future candidate experimentation.
+- vision sidecar: removed

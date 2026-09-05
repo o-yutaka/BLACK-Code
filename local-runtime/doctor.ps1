@@ -5,49 +5,85 @@ $InstallBase = Join-Path $env:LOCALAPPDATA "BLACK-Code"
 $RuntimeDir = Join-Path $InstallBase "runtime"
 $LauncherDir = Join-Path $InstallBase "launcher"
 $Server = Join-Path $RuntimeDir "llama\llama-server.exe"
-$Model = Join-Path $RuntimeDir "models\Qwen3.8-27B-Uncensored-IQ2_M.gguf"
-$ExpectedSha = "28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187"
+$LockPath = Join-Path $LauncherDir "model-7.27.lock.json"
+if (-not (Test-Path -LiteralPath $LockPath)) { Write-Host "FAIL: model-7.27.lock.json missing" -ForegroundColor Red; exit 2 }
+$Lock = Get-Content -Raw -LiteralPath $LockPath | ConvertFrom-Json
+$Model = Join-Path $RuntimeDir ("models\" + [string]$Lock.canonical_model.file)
+$ManifestPath = Join-Path $RuntimeDir "models\model-7.27.local.json"
+$Draft = Join-Path $RuntimeDir ("models\" + [string]$Lock.mtp_draft.file)
+$Failed = $false
 
-Write-Host "=== BLACK CODE GOVERNED RUNTIME DOCTOR ===" -ForegroundColor Cyan
+function Fail([string]$Message) { $script:Failed = $true; Write-Host "FAIL: $Message" -ForegroundColor Red }
+function Test-Gguf([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $stream=[IO.File]::OpenRead($Path)
+    try { $bytes=New-Object byte[] 4; return $stream.Read($bytes,0,4)-eq 4 -and [Text.Encoding]::ASCII.GetString($bytes)-eq "GGUF" }
+    finally { $stream.Dispose() }
+}
+
+Write-Host "=== BLACK CODE 7.27 GOVERNED RUNTIME DOCTOR ===" -ForegroundColor Cyan
 
 Write-Host "`n[NVIDIA]"
-if (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue) {
-    & nvidia-smi.exe --query-gpu=name,memory.total,memory.free,driver_version --format=csv,noheader
-} else { Write-Host "FAIL: nvidia-smi.exe not found" -ForegroundColor Red }
+if (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue) { & nvidia-smi.exe --query-gpu=name,memory.total,memory.free,driver_version --format=csv,noheader }
+else { Fail "nvidia-smi.exe not found" }
 
 Write-Host "`n[RAM]"
-$ram = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
-Write-Host ("{0:N1} GiB" -f $ram)
+try { $ram = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB; Write-Host ("{0:N1} GiB" -f $ram) }
+catch { Fail "RAM query failed: $($_.Exception.Message)" }
 
 Write-Host "`n[llama.cpp]"
-if (Test-Path $Server) { & $Server --version } else { Write-Host "FAIL: llama-server.exe missing" -ForegroundColor Red }
+if (Test-Path $Server) { & $Server --version; if ($LASTEXITCODE -ne 0) { Fail "llama-server.exe failed to run" } }
+else { Fail "llama-server.exe missing" }
 
-Write-Host "`n[Model baseline]"
-if (Test-Path $Model) {
-    $size = (Get-Item $Model).Length / 1GB
-    $hash = (Get-FileHash -Algorithm SHA256 -Path $Model).Hash.ToLowerInvariant()
-    Write-Host ("{0:N2} GiB" -f $size)
-    Write-Host "SHA256: $hash"
-    if ($hash -eq $ExpectedSha) { Write-Host "IQ2_M HASH VERIFIED" -ForegroundColor Green }
-    else { Write-Host "FAIL: IQ2_M hash mismatch" -ForegroundColor Red }
-} else { Write-Host "FAIL: IQ2_M model missing" -ForegroundColor Red }
+Write-Host "`n[Canonical BLACK 7.27 model]"
+if (-not (Test-Gguf $Model)) { Fail "canonical GGUF missing or invalid: $Model" }
+elseif (-not (Test-Path -LiteralPath $ManifestPath)) { Fail "model-7.27.local.json missing" }
+else {
+    try {
+        $manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
+        $bytes = (Get-Item -LiteralPath $Model).Length
+        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Model).Hash.ToLowerInvariant()
+        Write-Host ("{0:N4} GB decimal / {1:N2} GiB" -f ($bytes/1e9),($bytes/1GB))
+        Write-Host "SHA256: $hash"
+        if ($bytes -lt [int64]$Lock.canonical_model.target_min_bytes -or $bytes -gt [int64]$Lock.canonical_model.target_max_bytes) { Fail "model is outside 7.20..7.35 GB canonical byte window" }
+        elseif ($manifest.status -ne "CANONICAL_FIXED") { Fail "manifest status is not CANONICAL_FIXED" }
+        elseif ($manifest.model_file -ne $Lock.canonical_model.file) { Fail "manifest model filename mismatch" }
+        elseif ($manifest.model_sha256 -ne $hash) { Fail "model SHA does not match local pinned manifest" }
+        elseif ($manifest.parent_revision -ne $Lock.uncensored_parent.revision) { Fail "uncensored parent revision mismatch" }
+        else { Write-Host "BLACK 7.27 MODEL HASH + SIZE + PARENT VERIFIED" -ForegroundColor Green }
+    } catch { Fail "canonical model verification error: $($_.Exception.Message)" }
+}
+
+Write-Host "`n[Uncensored MTP draft]"
+if (-not (Test-Gguf $Draft)) { Fail "MTP draft missing or invalid" }
+else {
+    $draftHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Draft).Hash.ToLowerInvariant()
+    Write-Host "SHA256: $draftHash"
+    if ($draftHash -eq ([string]$Lock.mtp_draft.sha256).ToLowerInvariant()) { Write-Host "MTP Q4_0 HASH VERIFIED" -ForegroundColor Green }
+    else { Fail "MTP draft hash mismatch" }
+}
 
 Write-Host "`n[OpenCode]"
 $oc = Get-Command opencode -ErrorAction SilentlyContinue
-if ($oc) { & $oc.Source --version } else { Write-Host "FAIL: opencode missing" -ForegroundColor Red }
+if ($oc) { & $oc.Source --version; if ($LASTEXITCODE -ne 0) { Fail "opencode failed to run" } }
+else { Fail "opencode missing" }
 
 Write-Host "`n[Governed runtime]"
-$required = @("opencode-governor.js","opencode-telemetry.js","verification-gate.ps1","rule-bridge.ps1","repo-index.ps1","hf-parallel-download.ps1")
+$required = @("opencode-governor.js","opencode-telemetry.js","verification-gate.ps1","rule-bridge.ps1","repo-index.ps1","hf-parallel-download.ps1","build-model-7.27.ps1","extract-quant-map.mjs","model-7.27.lock.json")
 foreach ($name in $required) {
     $path = Join-Path $LauncherDir $name
     if (Test-Path $path) { Write-Host "OK: $name" -ForegroundColor Green }
-    else { Write-Host "FAIL: $name missing" -ForegroundColor Red }
+    else { Fail "$name missing" }
 }
 $verifyShim = Get-Command black-code-verify -ErrorAction SilentlyContinue
 if ($verifyShim) { Write-Host "OK: black-code-verify shim" -ForegroundColor Green }
-else { Write-Host "FAIL: black-code-verify shim missing from PATH" -ForegroundColor Red }
+else { Fail "black-code-verify shim missing from PATH" }
 
 Write-Host "`n[Canonical state]"
 $statePath = Join-Path $RuntimeDir "state.json"
 if (Test-Path $statePath) { Get-Content -Raw -LiteralPath $statePath }
-else { Write-Host "state.json missing; run setup.ps1" -ForegroundColor Yellow }
+else { Fail "state.json missing; run setup.ps1" }
+
+if ($Failed) { exit 1 }
+Write-Host "`nBLACK CODE DOCTOR PASS" -ForegroundColor Green
+exit 0
