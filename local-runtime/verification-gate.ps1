@@ -46,8 +46,13 @@ function Invoke-RuntimeCheck([string]$Command) {
 $git = Resolve-CommandPath @("git.exe", "git")
 $gitRepo = $false
 if ($git) {
-    & $git -C $Root rev-parse --is-inside-work-tree *> $null
-    $gitRepo = $LASTEXITCODE -eq 0
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $inside = & $git -C $Root rev-parse --is-inside-work-tree 2>$null
+        $gitRepo = ($LASTEXITCODE -eq 0) -and (([string]$inside).Trim() -eq "true")
+    }
+    finally { $ErrorActionPreference = $previousErrorAction }
 }
 if ($gitRepo) {
     Invoke-Check "git-diff-check" $git @("-C", $Root, "diff", "--check")
