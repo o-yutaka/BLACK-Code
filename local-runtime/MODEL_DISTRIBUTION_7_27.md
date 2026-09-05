@@ -9,9 +9,11 @@ Use this only when the canonical prebuilt GGUF does not exist yet, or when an in
 1. `prepare-parent-7.27.ps1` downloads only the pinned uncensored parent and stops after shard-completeness verification.
 2. The parent stays in the normal `model-build-7.27\uncensored-parent` location, so an interrupted CLI/session does not require a fresh download.
 3. `parent-download-state.json` is updated while Windows `hf.exe` is active. A replacement CLI can inspect that state instead of guessing from an old CLI process id.
-4. If the same WorkDir already has an active matching Windows `hf.exe`, rerunning `prepare-parent-7.27.ps1` attaches by observation and waits; it does not spawn a duplicate transfer.
-5. If that attached transfer ends before snapshot completeness, the same partial `SourceDir` is preserved and resumed without force/purge.
-6. Normal `setup.ps1` reuses the verified parent through the existing resume/integrity path and continues F16 -> imatrix -> tensor map -> dry run -> IQ2_XXS -> local manifest.
+4. If the same WorkDir already has an active matching Windows `hf.exe`, rerunning `prepare-parent-7.27.ps1` attaches by observation; it does not spawn a duplicate transfer.
+5. The attached/new transfer is watched using SourceDir bytes/mtime, stdout/stderr activity, and root/child process I/O counters. The default stall threshold is 900 seconds.
+6. When the matching transfer has no observable progress for the stall threshold, the repo + SourceDir identity is revalidated, only that matching process tree is stopped, partial files are preserved, and the same SourceDir is resumed. The default restart budget is 4.
+7. A stale `config.json` plus one or more safetensor files is never enough to mark this pinned sharded parent complete. `model.safetensors.index.json` must exist and every shard named by it must be present and non-empty.
+8. Normal `setup.ps1` reuses the verified parent through the existing resume/integrity path and continues F16 -> imatrix -> tensor map -> dry run -> IQ2_XXS -> local manifest.
 
 Preferred one-command source-build/resume entrypoint:
 
@@ -22,7 +24,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -HfDownloadWorkers 8
 ```
 
+Optional watchdog tuning is available without changing the canonical model/build contract:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\local-runtime\setup-resumable-7.27.ps1 `
+  -ModelWorkDir "$env:LOCALAPPDATA\BLACK-Code\model-build-7.27" `
+  -ParentStallSeconds 900 `
+  -ParentMaxStallRestarts 4 `
+  -ParentRetryBackoffSeconds 10 `
+  -HfDownloadWorkers 8
+```
+
 This is the handoff-safe entrypoint to give a replacement Codex/Hermes/OpenCode session. It first reuses/attaches/resumes the parent transfer, then enters canonical `setup.ps1` only after the parent snapshot is verified complete.
+
+Do not bypass this path by calling `build-model-7.27.ps1` directly merely to escape a stalled parent transfer. The direct builder is the lower-level canonical build stage; the handoff/stall recovery authority is `setup-resumable-7.27.ps1` -> `prepare-parent-7.27.ps1`.
 
 Prepare only the parent:
 
@@ -46,7 +62,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\local-runtime\inspect-parent-7.27.ps1
 ```
 
-Do not run `-Force`, `-ForceRebuild`, or purge options merely because the controlling AI CLI changed.
+Do not run `-Force`, `-ForceRebuild`, or purge options merely because the controlling AI CLI changed or an HF attempt stalled.
 
 ## B. Prebuilt-install path (preferred after the first proven build)
 
