@@ -43,6 +43,7 @@ function New-BlackCodeExecutionProfile(
     $body = [ordered]@{
         schema_version = "1.5"
         profile_name = "black-execution-fabric-governed-v4-7.27"
+        previous_profile_name = "black-execution-fabric-governed-v3-7.27"
         design_source = "BLACK atomize/overlap/recompose/utility/learning-policy pattern; copied as design only"
         authority = [ordered]@{
             may_edit_project = $true
@@ -141,6 +142,7 @@ function Write-BlackCodeSessionEvidence(
         process_exit_code = $ExitCode
         verification_status = "TASK_LEVEL_GOVERNED_EXTERNALLY"
         profile_name = $ProfileEnvelope.profile.profile_name
+        previous_profile_name = $ProfileEnvelope.profile.previous_profile_name
         profile_hash = $ProfileEnvelope.canonical_hash
         runtime = $ProfileEnvelope.profile.runtime
         project = $ProjectIdentity
