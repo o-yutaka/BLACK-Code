@@ -1,6 +1,24 @@
 # BLACK Code Local Runtime
 
-This directory is the canonical Windows local coding runtime for BLACK Code.
+This directory is the canonical **native Windows** local coding runtime for BLACK Code.
+
+## Host boundary: Docker / WSL are not dependencies
+
+BLACK Code canonical execution is now explicitly native Windows only:
+
+```text
+Windows 10/11
+  -> native Windows PowerShell / CMD
+  -> native Windows Python / Git / Node / curl
+  -> native NVIDIA driver
+  -> pinned llama.cpp CUDA runtime
+  -> OpenCode
+  -> BLACK 7.27
+```
+
+Docker Desktop, Docker Engine, WSL/WSL2, Linux Python, `/mnt/c` path translation and `\\wsl$` paths are **not part of the canonical runtime**. They may exist on the machine for unrelated work, but BLACK Code must not be controlled through them.
+
+`assert-native-windows.ps1` rejects WSL interop and WSL/Docker bridge ancestry before the canonical resumable setup starts. See `NATIVE_WINDOWS_BOUNDARY.md`.
 
 ## Canonical architecture
 
@@ -50,11 +68,11 @@ Setup enforces those versions and verifies both llama.cpp ZIP hashes before extr
 
 ## How the first build works
 
-`setup.ps1` makes the fixed model automatically if it does not already exist:
+The canonical resumable setup makes the fixed model automatically if it does not already exist:
 
 ```text
 pinned uncensored HF parent
-  -> parallel HF/Xet snapshot transfer
+  -> resumable HF/Xet snapshot transfer + stall watchdog
   -> pinned llama.cpp converter
   -> no-MTP F16 GGUF
   -> remote Range-only parse of pinned 7.27 reference tensor directory
@@ -70,19 +88,32 @@ pinned uncensored HF parent
 
 The reference 7.27 GB GGUF is not downloaded in full just to obtain its tensor map. Only its GGUF header/tensor directory is fetched with HTTP byte ranges. A server that ignores Range requests is rejected.
 
-The build needs roughly 125 GB of free temporary working space because the pinned parent and intermediate F16 GGUF coexist during conversion. Unless `-KeepIntermediate` is explicitly used by the builder, the large parent snapshot is removed after F16 conversion and the F16/intermediate files are removed after the final model is pinned.
+The build needs roughly 125 GB of effective temporary working capacity because the pinned parent and intermediate F16 GGUF coexist during conversion. Resumable parent bytes count toward that effective-capacity gate. Unless `-KeepIntermediate` is explicitly used by the builder, the large parent snapshot is removed only after successful F16 conversion and the F16/intermediate files are removed only after the final model is pinned.
 
 ## Hugging Face transfer
 
-Large parent snapshot transfer uses `hf_xet` high-performance mode. Fixed standalone artifacts such as the MTP draft use `hf-parallel-download.ps1`, which defaults to 8 byte-range workers, validates chunk lengths and joined length, and falls back to resumable single-stream transfer if range mode fails. Artifact hashes are still checked after transfer.
+Large parent snapshot transfer uses Windows `hf.exe` + `hf_xet` high-performance mode. The resumable controller records durable state, attaches to an already-active matching Windows transfer, detects no-progress stalls using file/log/process-I/O evidence, stops only a revalidated matching stalled process tree, preserves partials and resumes the same source directory.
+
+Fixed standalone artifacts such as the MTP draft use `hf-parallel-download.ps1`, which defaults to 8 byte-range workers, validates chunk lengths and joined length, and falls back to resumable single-stream transfer if range mode fails. Artifact hashes are still checked after transfer.
 
 ## One-command use
 
-First installation/update from the repository:
+First installation/update from the repository must start from **native Windows CMD or native Windows PowerShell**, not WSL/Docker:
+
+```bat
+local-runtime\BLACK-Code-Native.cmd
+```
+
+Equivalent native PowerShell entrypoint:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\local-runtime\setup.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\local-runtime\setup-resumable-7.27.ps1 `
+  -ModelWorkDir "$env:LOCALAPPDATA\BLACK-Code\model-build-7.27" `
+  -HfDownloadWorkers 8
 ```
+
+Do not invoke the canonical setup from `/mnt/c`, `wsl.exe`, a WSL shell, Docker Desktop tooling, or a container shell.
 
 After bootstrap:
 
@@ -145,8 +176,10 @@ INDEX -> RULES -> DELTA -> BATCH -> EDIT
 
 ## Diagnostics
 
+Run diagnostics from native Windows PowerShell:
+
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\BLACK-Code\launcher\doctor.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\BLACK-Code\launcher\doctor.ps1"
 ```
 
 Doctor exits non-zero if the fixed model, local model SHA manifest, MTP draft, pinned OpenCode/llama.cpp runtime, governed components or canonical state are invalid.
