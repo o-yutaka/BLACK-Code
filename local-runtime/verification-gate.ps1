@@ -35,7 +35,7 @@ function Invoke-Check([string]$Name, [string]$File, [string[]]$Arguments) {
 function Invoke-RuntimeCheck([string]$Command) {
     $normalized = ($Command.Trim() -replace '\s+', ' ')
     if (-not $normalized) { return }
-    if ($normalized -match '^(?i)(echo\b|true\b|exit\s+0\b|pwd\b|cd\b|git\s+(status|diff)\b)') {
+    if ($normalized -match '(?i)^(echo\b|true\b|exit\s+0\b|pwd\b|cd\b|git\s+(status|diff)\b)') {
         throw "RuntimeCommand is a no-op and cannot satisfy final verification: $normalized"
     }
     $cmd = Resolve-CommandPath @("cmd.exe", "cmd")
@@ -83,7 +83,7 @@ if (Test-Path -LiteralPath $packageJson) {
         }
     }
 }
-elif ((Test-Path -LiteralPath $pyproject) -or (Test-Path -LiteralPath $requirements)) {
+elseif ((Test-Path -LiteralPath $pyproject) -or (Test-Path -LiteralPath $requirements)) {
     $python = Resolve-CommandPath @("python.exe", "python", "py.exe", "py")
     if (-not $python) { throw "Python project detected but Python was not found." }
     $changedPython = @()
@@ -118,20 +118,20 @@ elif ((Test-Path -LiteralPath $pyproject) -or (Test-Path -LiteralPath $requireme
         $Strength = [Math]::Max($Strength, 1)
     }
 }
-elif (Test-Path -LiteralPath $cargoToml) {
+elseif (Test-Path -LiteralPath $cargoToml) {
     $cargo = Resolve-CommandPath @("cargo.exe", "cargo")
     if (-not $cargo) { throw "Cargo.toml detected but cargo was not found." }
     Invoke-Check "cargo-check" $cargo @("check")
     Invoke-Check "cargo-test" $cargo @("test")
     $Strength = 3
 }
-elif (Test-Path -LiteralPath $goMod) {
+elseif (Test-Path -LiteralPath $goMod) {
     $go = Resolve-CommandPath @("go.exe", "go")
     if (-not $go) { throw "go.mod detected but go was not found." }
     Invoke-Check "go-test" $go @("test", "./...")
     $Strength = 3
 }
-elif ($dotnetProject) {
+elseif ($dotnetProject) {
     $dotnet = Resolve-CommandPath @("dotnet.exe", "dotnet")
     if (-not $dotnet) { throw ".NET project detected but dotnet was not found." }
     Invoke-Check "dotnet-test" $dotnet @("test")
@@ -145,7 +145,7 @@ if ($RuntimeCommand.Trim()) {
 
 if ($Strength -lt 3) {
     Write-Host "BLACK_CODE_VERIFY=BLOCKED reason=no-strong-project-or-runtime-check" -ForegroundColor Yellow
-    Write-Host "Provide a task-relevant runtime check with: black-code-verify -RuntimeCommand \"<real entrypoint/smoke command>\"" -ForegroundColor Yellow
+    Write-Host 'Provide a task-relevant runtime check with: black-code-verify -RuntimeCommand "<real entrypoint/smoke command>"' -ForegroundColor Yellow
     exit 3
 }
 
