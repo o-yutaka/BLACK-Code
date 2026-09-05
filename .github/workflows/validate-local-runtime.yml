@@ -24,6 +24,7 @@ jobs:
         run: |
           $files = @(
             './local-runtime/prepare-parent-7.27.ps1',
+            './local-runtime/watch-hf-transfer.ps1',
             './local-runtime/inspect-parent-7.27.ps1',
             './local-runtime/setup-resumable-7.27.ps1',
             './local-runtime/install-prebuilt-7.27.ps1',
@@ -45,14 +46,44 @@ jobs:
           $statePath = Join-Path $work 'parent-download-state.json'
           if (-not (Test-Path -LiteralPath $statePath)) { throw 'parent state file missing' }
           $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
-          if ($state.schema_version -ne '1.0') { throw 'parent state schema mismatch' }
+          if ($state.schema_version -ne '1.1') { throw 'parent state schema mismatch' }
           if ($state.status -ne 'NO_PRIOR_STATE') { throw "unexpected parent state: $($state.status)" }
           if ($state.repo -ne 'JonathanColetti/Qwen3.8-27B-Uncensored') { throw 'parent state repo mismatch' }
           if ($state.revision -ne '5bb7aa90f0efef548e87005b1fb7658e522b6b7f') { throw 'parent state revision mismatch' }
           if (-not $state.windows_host) { throw 'parent state did not record Windows host' }
+          if ($state.watchdog_stall_seconds -ne 900) { throw 'parent watchdog default mismatch' }
           $inspection = ./local-runtime/inspect-parent-7.27.ps1 -WorkDir $work | ConvertFrom-Json
           if ($inspection.verdict -ne 'INCOMPLETE_OR_NOT_STARTED') { throw "unexpected parent inspection verdict: $($inspection.verdict)" }
           if ($inspection.recorded_hf_pid_alive_and_matching) { throw 'status smoke incorrectly found an active hf process' }
+      - name: Smoke partial shard is never complete
+        shell: powershell
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP 'black-parent-partial-smoke'
+          $source = Join-Path $work 'uncensored-parent'
+          New-Item -ItemType Directory -Force -Path $source | Out-Null
+          '{}' | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $source 'config.json')
+          'partial' | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $source 'model-00001-of-00012.safetensors')
+          ./local-runtime/prepare-parent-7.27.ps1 -WorkDir $work -StatusOnly | Out-Null
+          $state = Get-Content -Raw -LiteralPath (Join-Path $work 'parent-download-state.json') | ConvertFrom-Json
+          if ($state.snapshot_complete) { throw 'config + one shard without index was incorrectly accepted as complete' }
+          if ($state.index_present) { throw 'partial fixture unexpectedly reported an index' }
+      - name: Smoke HF stall watchdog stops only matching transfer
+        shell: powershell
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP 'black-parent-stall-smoke'
+          $source = Join-Path $work 'uncensored-parent'
+          New-Item -ItemType Directory -Force -Path $source | Out-Null
+          $repo = 'JonathanColetti/Qwen3.8-27B-Uncensored'
+          $marker = "hf.exe $repo $source"
+          $script = "`$marker = '$($marker.Replace("'","''"))'; Start-Sleep -Seconds 30"
+          $dummy = Start-Process -FilePath powershell.exe -ArgumentList @('-NoProfile','-Command',$script) -PassThru -WindowStyle Hidden
+          Start-Sleep -Milliseconds 500
+          $json = ./local-runtime/watch-hf-transfer.ps1 -ProcessId $dummy.Id -SourceDir $source -Repo $repo -SourcePattern $source -PollSeconds 1 -StallSeconds 5 -StopOnStall
+          $watch = $json | ConvertFrom-Json
+          if ($watch.verdict -ne 'STALLED_STOPPED') { throw "watchdog did not stop stalled matching transfer: $($watch.verdict)" }
+          Start-Sleep -Milliseconds 500
+          if (Get-Process -Id $dummy.Id -ErrorAction SilentlyContinue) { throw 'watchdog left stalled root process alive' }
+          if ($watch.idle_seconds -lt 5) { throw 'watchdog fired before configured stall threshold' }
       - name: Smoke active parent handoff attach
         shell: powershell
         run: |
@@ -60,9 +91,12 @@ jobs:
           $source = Join-Path $work 'uncensored-parent'
           New-Item -ItemType Directory -Force -Path $source | Out-Null
           $config = Join-Path $source 'config.json'
+          $index = Join-Path $source 'model.safetensors.index.json'
           $tensor = Join-Path $source 'fixture.safetensors'
+          '{}' | Set-Content -Encoding UTF8 -LiteralPath $config
+          '{"weight_map":{"fixture.weight":"fixture.safetensors"}}' | Set-Content -Encoding UTF8 -LiteralPath $index
           $repo = 'JonathanColetti/Qwen3.8-27B-Uncensored'
-          $cmd = "ping 127.0.0.1 -n 3 >nul & echo {}>`"$config`" & echo x>`"$tensor`" & rem hf.exe $repo $source"
+          $cmd = "ping 127.0.0.1 -n 3 >nul & echo x>`"$tensor`" & rem hf.exe $repo $source"
           $dummy = Start-Process -FilePath cmd.exe -ArgumentList @('/d','/c',$cmd) -PassThru -WindowStyle Hidden
           Start-Sleep -Milliseconds 500
           ./local-runtime/prepare-parent-7.27.ps1 -WorkDir $work -PollSeconds 5
@@ -70,6 +104,7 @@ jobs:
           if ($state.status -ne 'VERIFIED_COMPLETE') { throw "handoff did not reach VERIFIED_COMPLETE: $($state.status)" }
           if ([int64]$state.parent_bytes -le 0) { throw 'handoff fixture recorded zero parent bytes' }
           if (-not $state.snapshot_complete) { throw 'handoff fixture snapshot was not marked complete' }
+          if (-not $state.index_present) { throw 'handoff fixture did not require the shard index' }
           Wait-Process -Id $dummy.Id -ErrorAction SilentlyContinue
       - name: Smoke prebuilt failure preserves resumable stage
         shell: powershell
