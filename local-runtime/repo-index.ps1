@@ -26,7 +26,8 @@ function Normalize-BlackCodePath([object]$Value) {
 function Invoke-BlackCodeGitLines([object]$Git,[string]$Root,[string[]]$Args) {
     $rows = @(& $Git.Source -C $Root @Args 2>$null)
     if ($LASTEXITCODE -ne 0) { return @() }
-    return @($rows | ForEach-Object { Normalize-BlackCodePath $_ } | Where-Object { $_ } | Sort-Object -Unique)
+    $result = @($rows | ForEach-Object { Normalize-BlackCodePath $_ } | Where-Object { $_ } | Sort-Object -Unique)
+    return ,$result
 }
 
 function Get-BlackCodeRepoIndex(
@@ -71,12 +72,12 @@ function Get-BlackCodeRepoIndex(
     # Do not use `git status -uno`: new files are first-class BLACK Code delta.
     # `git diff HEAD` covers staged + unstaged tracked changes; ls-files covers untracked.
     $trackedWorkingDelta = if ($head) {
-        Invoke-BlackCodeGitLines $git $resolved @("diff","--name-only","HEAD","--",".")
+        @(Invoke-BlackCodeGitLines $git $resolved @("diff","--name-only","HEAD","--","."))
     } else { @() }
-    $untrackedFiles = Invoke-BlackCodeGitLines $git $resolved @("ls-files","--others","--exclude-standard")
+    $untrackedFiles = @(Invoke-BlackCodeGitLines $git $resolved @("ls-files","--others","--exclude-standard"))
 
     $sameHead = $cached -and $cached.git_head -and $head -and ($cached.git_head -eq $head)
-    $cleanReuse = $sameHead -and $trackedWorkingDelta.Count -eq 0 -and $untrackedFiles.Count -eq 0
+    $cleanReuse = $sameHead -and @($trackedWorkingDelta).Count -eq 0 -and @($untrackedFiles).Count -eq 0
 
     if ($cleanReuse) {
         $cached.cache_status = "HIT"
@@ -87,8 +88,8 @@ function Get-BlackCodeRepoIndex(
         return [ordered]@{ index = $cached; index_path = $indexPath; context_path = $contextPath }
     }
 
-    $tracked = Invoke-BlackCodeGitLines $git $resolved @("ls-files")
-    $currentFiles = @($tracked + $untrackedFiles | Sort-Object -Unique)
+    $tracked = @(Invoke-BlackCodeGitLines $git $resolved @("ls-files"))
+    $currentFiles = @(@($tracked) + @($untrackedFiles) | Sort-Object -Unique)
 
     $packageRoots = @($currentFiles | Where-Object {
         $_ -match '(^|/)(package\.json|pyproject\.toml|Cargo\.toml|go\.mod|Directory\.Build\.props|[^/]+\.sln)$'
@@ -102,12 +103,12 @@ function Get-BlackCodeRepoIndex(
     } | Sort-Object -Unique)
 
     $changed = [System.Collections.Generic.List[string]]::new()
-    foreach ($f in $trackedWorkingDelta) { if ($f) { [void]$changed.Add($f) } }
-    foreach ($f in $untrackedFiles) { if ($f) { [void]$changed.Add($f) } }
+    foreach ($f in @($trackedWorkingDelta)) { if ($f) { [void]$changed.Add($f) } }
+    foreach ($f in @($untrackedFiles)) { if ($f) { [void]$changed.Add($f) } }
 
     if ($cached -and $cached.git_head -and $head -and $cached.git_head -ne $head) {
-        $committedDelta = Invoke-BlackCodeGitLines $git $resolved @("diff","--name-only",$cached.git_head,$head,"--",".")
-        foreach ($f in $committedDelta) { if ($f) { [void]$changed.Add($f) } }
+        $committedDelta = @(Invoke-BlackCodeGitLines $git $resolved @("diff","--name-only",$cached.git_head,$head,"--","."))
+        foreach ($f in @($committedDelta)) { if ($f) { [void]$changed.Add($f) } }
     }
     $changedFiles = @($changed | Sort-Object -Unique)
 
@@ -142,12 +143,12 @@ function Get-BlackCodeRepoIndex(
         cache_status = if ($cached) { "DELTA_REFRESH" } else { "MISS_BUILD" }
         git_head = $head
         previous_git_head = if ($cached) { $cached.git_head } else { $null }
-        tracked_file_count = $tracked.Count
-        untracked_file_count = $untrackedFiles.Count
+        tracked_file_count = @($tracked).Count
+        untracked_file_count = @($untrackedFiles).Count
         changed_files = $changedFiles
         untracked_files = @($untrackedFiles | Select-Object -First 200)
         package_roots = $packageRoots
-        test_file_count = $testFiles.Count
+        test_file_count = @($testFiles).Count
         test_files = @($testFiles | Select-Object -First 400)
         likely_tests = $likelyTests
     }
