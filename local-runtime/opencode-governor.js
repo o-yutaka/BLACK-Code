@@ -2,10 +2,12 @@ import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { execFileSync } from "node:child_process"
+import { fileURLToPath } from "node:url"
 
 const calls = new Map()
 const sessions = new Map()
 const ignoredDirs = new Set([".git", ".black", ".venv", "node_modules", "target", "dist", "build", "__pycache__"])
+const governorFile = fileURLToPath(import.meta.url)
 
 function enabled() {
   return Boolean(process.env.BLACK_CODE_GOVERNOR_DIR && process.env.BLACK_CODE_PROJECT_ROOT)
@@ -21,6 +23,10 @@ function projectRoot(fallback) {
 
 function stateDir() {
   return path.resolve(process.env.BLACK_CODE_GOVERNOR_DIR)
+}
+
+function runtimeDir() {
+  return path.dirname(stateDir())
 }
 
 function continuityPath(root) {
@@ -39,6 +45,20 @@ function git(root, args) {
   }
 }
 
+function commandVersion(command) {
+  if (!command) return "missing"
+  try {
+    return execFileSync(command, ["--version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 10000,
+      maxBuffer: 1024 * 1024,
+    }).trim()
+  } catch {
+    return "unavailable"
+  }
+}
+
 function fileDigest(file) {
   try {
     const stat = fs.statSync(file)
@@ -48,6 +68,31 @@ function fileDigest(file) {
   } catch {
     return "missing"
   }
+}
+
+function readJson(file) {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")) } catch { return null }
+}
+
+function runtimeFingerprint() {
+  const runtime = runtimeDir()
+  const runtimeStatePath = path.join(runtime, "state.json")
+  const runtimeState = readJson(runtimeStatePath)
+  const llama = runtimeState?.llama_server || null
+  const verifyScript = process.env.BLACK_CODE_VERIFY_SCRIPT || path.join(runtime, "verification-gate.ps1")
+  const payload = {
+    schema_version: "1.0",
+    node_version: process.version,
+    opencode_version: commandVersion("opencode"),
+    llama_version: commandVersion(llama),
+    state_hash: fileDigest(runtimeStatePath),
+    model_manifest_hash: fileDigest(path.join(runtime, "models", "model-7.27.local.json")),
+    verifier_hash: fileDigest(verifyScript),
+    governor_hash: fileDigest(governorFile),
+    rules_hash: fileDigest(path.join(runtime, "project-rules.md")),
+    instructions_hash: fileDigest(path.join(runtime, "black-code-execution.md")),
+  }
+  return sha256(JSON.stringify(payload))
 }
 
 function fallbackTreeDigest(root) {
@@ -86,22 +131,38 @@ function loadContinuity(root) {
   try { return JSON.parse(fs.readFileSync(continuityPath(root), "utf8")) } catch { return null }
 }
 
+function currentVerificationState(state) {
+  const workspaceHash = workspaceFingerprint(state.root)
+  const environmentHash = runtimeFingerprint()
+  const runtimeChanged = environmentHash !== state.runtimeHash
+  if (runtimeChanged) {
+    state.runtimeHash = environmentHash
+    state.verifiedHash = null
+    state.token = null
+    state.profile = null
+    state.priorUnverified = true
+    state.lastFailure = null
+  }
+  return { workspaceHash, environmentHash, runtimeChanged }
+}
+
 function persist(state) {
   if (!enabled()) return
   try {
     fs.mkdirSync(stateDir(), { recursive: true })
-    const current = workspaceFingerprint(state.root)
+    const { workspaceHash: current, environmentHash } = currentVerificationState(state)
     const record = {
-      schema_version: "2.0",
+      schema_version: "3.0",
       project_root: state.root,
       updated_at: new Date().toISOString(),
       last_session_id: state.sessionID,
       baseline_hash: state.baselineHash,
       last_workspace_hash: current,
+      last_runtime_hash: environmentHash,
       last_verified_hash: state.verifiedHash,
       verification_token: state.token,
       verification_profile: state.profile,
-      unverified: current !== state.verifiedHash && (current !== state.baselineHash || state.priorUnverified),
+      unverified: current !== state.verifiedHash || environmentHash !== state.verifiedRuntimeHash || (current !== state.baselineHash || state.priorUnverified),
     }
     const target = continuityPath(state.root)
     const temp = `${target}.${process.pid}.tmp`
@@ -116,15 +177,20 @@ function stateFor(sessionID, fallbackRoot) {
   if (state) return state
   const root = projectRoot(fallbackRoot)
   const current = workspaceFingerprint(root)
+  const environmentHash = runtimeFingerprint()
   const prior = loadContinuity(root)
-  const priorUnverified = Boolean(prior?.unverified && prior?.last_workspace_hash === current && prior?.last_verified_hash !== current)
+  const priorMatches = prior?.last_workspace_hash === current && prior?.last_runtime_hash === environmentHash
+  const priorVerified = priorMatches && prior?.last_verified_hash === current && Boolean(prior?.verification_token)
+  const priorUnverified = Boolean(prior?.unverified && priorMatches && !priorVerified)
   state = {
     sessionID: id,
     root,
     baselineHash: current,
-    verifiedHash: prior?.last_verified_hash === current ? current : null,
-    token: prior?.last_verified_hash === current ? prior?.verification_token ?? null : null,
-    profile: prior?.last_verified_hash === current ? prior?.verification_profile ?? null : null,
+    runtimeHash: environmentHash,
+    verifiedHash: priorVerified ? current : null,
+    verifiedRuntimeHash: priorVerified ? environmentHash : null,
+    token: priorVerified ? prior?.verification_token ?? null : null,
+    profile: priorVerified ? prior?.verification_profile ?? null : null,
     priorUnverified,
     lastFailure: null,
   }
@@ -152,12 +218,13 @@ function isFinalVerifyCommand(command) {
   return /(^|[;&|]\s*)(?:black-code-verify(?:\.cmd|\.ps1)?\b|(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\b[^;&|\n]*verification-gate\.ps1\b)/i.test(command)
 }
 
-function verificationToken(state, current, command) {
+function verificationToken(current, environmentHash, command) {
   const payload = {
-    schema_version: "2.0",
+    schema_version: "3.0",
     workspace_hash: current,
+    runtime_hash: environmentHash,
     command_hash: sha256(command),
-    profile: "governed-final-v2",
+    profile: "governed-final-v3",
   }
   return sha256(JSON.stringify(payload))
 }
@@ -171,14 +238,14 @@ export const BlackCodeGovernor = async ({ directory, worktree } = {}) => ({
   "tool.execute.before": async (input, output) => {
     if (!enabled()) return
     const state = stateFor(input?.sessionID, worktree || directory)
+    const { workspaceHash: current, environmentHash } = currentVerificationState(state)
     const args = output?.args ?? {}
     calls.set(callKey(input), { tool: input?.tool ?? "unknown", args })
     if (!shellLike(input?.tool)) return
     const command = normalizedCommand(args.command)
     if (!command || !state.lastFailure) return
-    const current = workspaceFingerprint(state.root)
-    if (state.lastFailure.command === command && state.lastFailure.workspaceHash === current) {
-      throw new Error("BLACK CODE repeat guard: this exact command already failed against the same workspace state. Inspect the failure and change the cause, input, command, or strategy before retrying.")
+    if (state.lastFailure.command === command && state.lastFailure.workspaceHash === current && state.lastFailure.runtimeHash === environmentHash) {
+      throw new Error("BLACK CODE repeat guard: this exact command already failed against the same workspace + runtime state. Inspect the failure and change the cause, input, command, or strategy before retrying.")
     }
   },
 
@@ -193,6 +260,7 @@ export const BlackCodeGovernor = async ({ directory, worktree } = {}) => ({
 
     if (editLike(tool)) {
       state.verifiedHash = null
+      state.verifiedRuntimeHash = null
       state.token = null
       state.profile = null
       state.priorUnverified = true
@@ -203,10 +271,10 @@ export const BlackCodeGovernor = async ({ directory, worktree } = {}) => ({
     if (!shellLike(tool)) return
     const command = normalizedCommand(args.command)
     const exitCode = outputExitCode(output)
-    const current = workspaceFingerprint(state.root)
+    const { workspaceHash: current, environmentHash } = currentVerificationState(state)
 
     if (exitCode !== null && exitCode !== 0) {
-      state.lastFailure = { command, workspaceHash: current }
+      state.lastFailure = { command, workspaceHash: current, runtimeHash: environmentHash }
       persist(state)
       return
     }
@@ -214,8 +282,9 @@ export const BlackCodeGovernor = async ({ directory, worktree } = {}) => ({
 
     if (exitCode === 0 && isFinalVerifyCommand(command)) {
       state.verifiedHash = current
-      state.profile = "governed-final-v2"
-      state.token = verificationToken(state, current, command)
+      state.verifiedRuntimeHash = environmentHash
+      state.profile = "governed-final-v3"
+      state.token = verificationToken(current, environmentHash, command)
       state.priorUnverified = false
       persist(state)
     }
@@ -224,13 +293,17 @@ export const BlackCodeGovernor = async ({ directory, worktree } = {}) => ({
   "experimental.text.complete": async (input, output) => {
     if (!enabled()) return
     const state = stateFor(input?.sessionID, worktree || directory)
-    const current = workspaceFingerprint(state.root)
+    const { workspaceHash: current, environmentHash } = currentVerificationState(state)
     const changed = current !== state.baselineHash || state.priorUnverified
-    const verified = Boolean(state.verifiedHash && state.verifiedHash === current && state.token)
+    const verified = Boolean(
+      state.verifiedHash === current &&
+      state.verifiedRuntimeHash === environmentHash &&
+      state.token
+    )
     if (changed && !verified) {
       output.text = [
         "BLACK VERIFY: UNVERIFIED",
-        "現在のworkspace状態に束縛されたfinal verification tokenがありません。完成回答は破棄しました。",
+        "現在のworkspace + runtime/model/rules/verifier状態に束縛されたfinal verification tokenがありません。完成回答は破棄しました。",
         "変更内容を実環境で検証し、最後に `black-code-verify` を成功させてから完了を報告してください。",
       ].join("\n")
     }
