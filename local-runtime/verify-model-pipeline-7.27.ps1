@@ -45,7 +45,7 @@ if (Test-Path -LiteralPath $ParentStatePath) {
     } catch { $checks.parent_state_verified = $false }
 }
 
-if (Test-Path -LiteralPath $F16Path -or Test-Path -LiteralPath $F16ProvenancePath) {
+if ((Test-Path -LiteralPath $F16Path) -or (Test-Path -LiteralPath $F16ProvenancePath)) {
     try {
         if (-not (Test-Gguf $F16Path) -or -not (Test-Path -LiteralPath $F16ProvenancePath)) { throw "F16/provenance pair incomplete" }
         $fp = Get-Content -Raw -LiteralPath $F16ProvenancePath | ConvertFrom-Json
@@ -55,7 +55,7 @@ if (Test-Path -LiteralPath $F16Path -or Test-Path -LiteralPath $F16ProvenancePat
     } catch { $checks.f16_provenance_consistent = $false }
 }
 
-if (Test-Path -LiteralPath $TensorMap -or Test-Path -LiteralPath $TensorEvidencePath) {
+if ((Test-Path -LiteralPath $TensorMap) -or (Test-Path -LiteralPath $TensorEvidencePath)) {
     try {
         if (-not (Test-Path -LiteralPath $TensorMap) -or -not (Test-Path -LiteralPath $TensorEvidencePath)) { throw "tensor map/evidence pair incomplete" }
         $e = Get-Content -Raw -LiteralPath $TensorEvidencePath | ConvertFrom-Json
@@ -103,7 +103,8 @@ $result = [ordered]@{
 $text = $result | ConvertTo-Json -Depth 8
 if ($Json) { Write-Output $text }
 else {
-    Write-Host "BLACK 7.27 MODEL PIPELINE VERIFY: $($result.status)" -ForegroundColor $(if ($result.status -eq 'PASS') { 'Green' } else { 'Red' })
+    $color = if ($result.status -eq 'PASS') { 'Green' } else { 'Red' }
+    Write-Host "BLACK 7.27 MODEL PIPELINE VERIFY: $($result.status)" -ForegroundColor $color
     Write-Host "Model: $ModelPath"
     Write-Host "Bytes: $modelBytes"
     Write-Host "SHA256: $modelSha"
