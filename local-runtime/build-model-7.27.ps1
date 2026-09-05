@@ -145,12 +145,11 @@ Invoke-Native $VenvPython @("-m","pip","install","--disable-pip-version-check","
 Invoke-Native $VenvPython @("-m","pip","install","--disable-pip-version-check","huggingface_hub[hf_xet]") "install HF/Xet transport"
 $Hf = Join-Path $VenvDir "Scripts\hf.exe"
 if (-not (Test-Path -LiteralPath $Hf)) { throw "hf CLI was not installed in build venv." }
-$hfVersionOut=[IO.Path]::GetTempFileName();$hfVersionErr=[IO.Path]::GetTempFileName()
-try {
-    $hfVersionProcess=Start-Process -FilePath $VenvPython -ArgumentList @("-c","import huggingface_hub; print(huggingface_hub.__version__)") -WorkingDirectory $env:SystemRoot -Wait -PassThru -RedirectStandardOutput $hfVersionOut -RedirectStandardError $hfVersionErr
-    $HfHubVersion=((Get-Content -Raw -LiteralPath $hfVersionOut -ErrorAction SilentlyContinue).Trim() -split "`r?`n")[0]
-    if($hfVersionProcess.ExitCode -ne 0 -or -not $HfHubVersion){throw "huggingface_hub version probe failed"}
-} finally {Remove-Item -Force -ErrorAction SilentlyContinue $hfVersionOut,$hfVersionErr}
+$hfDistInfo=Get-ChildItem -LiteralPath (Join-Path $VenvDir "Lib\site-packages") -Directory -Filter "huggingface_hub-*.dist-info" -ErrorAction SilentlyContinue | Select-Object -First 1
+if(-not $hfDistInfo){throw "huggingface_hub dist-info was not installed in build venv."}
+$hfMetadata=Get-Content -Raw -LiteralPath (Join-Path $hfDistInfo.FullName "METADATA") -ErrorAction Stop
+$HfHubVersion=([regex]::Match($hfMetadata,'(?m)^Version:\s*(\S+)').Groups[1].Value).Trim()
+if(-not $HfHubVersion){throw "huggingface_hub package metadata has no Version field."}
 
 if ($PurgeDownloadCache -and (Test-Path -LiteralPath $SourceDir)) {
     Write-Host "[7.27] PURGE requested: removing parent snapshot/cache before download" -ForegroundColor Yellow
