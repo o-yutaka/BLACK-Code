@@ -17,6 +17,7 @@ $BinDir = Join-Path $InstallBase "bin"
 $FabricEvidenceDir = Join-Path $RuntimeDir "execution-fabric"
 $RepoIndexRoot = Join-Path $RuntimeDir "repo-index"
 $BottleneckDir = Join-Path $RuntimeDir "bottlenecks"
+$GovernorDir = Join-Path $RuntimeDir "governor"
 
 $ServerExe = Join-Path $LlamaDir "llama-server.exe"
 $ModelFile = "Qwen3.8-27B-Uncensored-IQ2_M.gguf"
@@ -59,9 +60,14 @@ function Resolve-SetupScript {
 }
 
 function Resolve-RuntimeFile([string]$Name) {
-    $near = Join-Path $PSScriptRoot $Name; if (Test-Path $near) { return $near }
-    $installed = Join-Path $LauncherDir $Name; if (Test-Path $installed) { return $installed }
+    $near = Join-Path $PSScriptRoot $Name; if (Test-Path $near) { return (Resolve-Path -LiteralPath $near).Path }
+    $installed = Join-Path $LauncherDir $Name; if (Test-Path $installed) { return (Resolve-Path -LiteralPath $installed).Path }
     throw "$Name was not found. Run BLACK Code setup from the latest repository checkout."
+}
+
+function Convert-ToFileUri([string]$Path) {
+    $resolved = (Resolve-Path -LiteralPath $Path).Path.Replace('\', '/')
+    return "file:///$resolved"
 }
 
 function Ensure-Installed {
@@ -76,7 +82,7 @@ function Ensure-Installed {
 }
 
 Ensure-Installed
-New-Item -ItemType Directory -Force -Path $LogDir, $FabricEvidenceDir, $RepoIndexRoot, $BottleneckDir | Out-Null
+New-Item -ItemType Directory -Force -Path $LogDir, $FabricEvidenceDir, $RepoIndexRoot, $BottleneckDir, $GovernorDir | Out-Null
 . (Resolve-RuntimeFile "execution-fabric.ps1")
 . (Resolve-RuntimeFile "repo-index.ps1")
 
@@ -86,8 +92,10 @@ $trackedFileCount = $repoIndex.index.tracked_file_count
 $instructionSource = Resolve-RuntimeFile "black-code-execution.md"
 $instructionRuntimePath = Join-Path $RuntimeDir "black-code-execution.md"
 $repoContextRuntimePath = Join-Path $RuntimeDir "repo-context.md"
+$projectRulesRuntimePath = Join-Path $RuntimeDir "project-rules.md"
 Copy-Item -Force $instructionSource $instructionRuntimePath
 Copy-Item -Force $repoIndex.context_path $repoContextRuntimePath
+& (Resolve-RuntimeFile "rule-bridge.ps1") -ProjectRoot $projectRoot -Destination $projectRulesRuntimePath
 
 $gpuLine = ((Invoke-NvidiaSmi "name,memory.total,memory.free") -split "`r?`n")[0]
 $gpuParts = $gpuLine -split ',' | ForEach-Object { $_.Trim() }
@@ -112,10 +120,13 @@ $profileEnvelope = New-BlackCodeExecutionProfile -Context $Context -FitTargetMiB
 $Port = Find-FreePort 18080 18099
 $BaseUrl = "http://127.0.0.1:$Port/v1"; $HealthUrl = "http://127.0.0.1:$Port/health"
 $ConfigPath = Join-Path $RuntimeDir "opencode.runtime.json"
+$telemetryPluginUri = Convert-ToFileUri (Resolve-RuntimeFile "opencode-telemetry.js")
+$governorPluginUri = Convert-ToFileUri (Resolve-RuntimeFile "opencode-governor.js")
 $config = [ordered]@{
     '$schema' = "https://opencode.ai/config.json"
     model = $ModelId
-    instructions = @("black-code-execution.md", "repo-context.md")
+    instructions = @("black-code-execution.md", "repo-context.md", "project-rules.md")
+    plugin = @($telemetryPluginUri, $governorPluginUri)
     permission = [ordered]@{ read="allow"; edit="allow"; glob="allow"; grep="allow"; list="allow"; bash="allow"; task="allow"; todowrite="allow"; webfetch="allow"; websearch="allow"; lsp="allow"; skill="allow"; external_directory="ask"; doom_loop="ask" }
     provider = [ordered]@{
         $ProviderId = [ordered]@{
@@ -138,10 +149,13 @@ Write-Host "BLACK CODE - LOCAL QWEN 3.8" -ForegroundColor Magenta
 Write-Host "Project:   $projectRoot"; Write-Host "GPU:       $gpuName"; Write-Host "VRAM:      $freeVram / $totalVram MiB free"; Write-Host "RAM:       $ramGiB GiB"
 Write-Host "Model:     $ModelFile"; Write-Host "Index:     $($repoIndex.index.cache_status) / $trackedFileCount tracked" -ForegroundColor Green
 Write-Host "Delta:     $(@($repoIndex.index.changed_files).Count) changed / $(@($repoIndex.index.likely_tests).Count) likely tests"
+Write-Host "Rules:     Claude/BLACK bridge active"
 Write-Host "Context:   $Context ($contextReason)"; Write-Host "Output:    $OutputLimit max tokens"
 Write-Host ("VRAM fit:  automatic; {0} MiB target headroom" -f $fitTarget)
-Write-Host "Quant:     IQ2_M 10.6 GB speed/memory profile" -ForegroundColor Green; Write-Host "Spec:      MTP max 2 ALWAYS ON" -ForegroundColor Green
+Write-Host "Quant:     IQ2_M 10.6 GB verified baseline" -ForegroundColor Green; Write-Host "Spec:      MTP max 2 ALWAYS ON" -ForegroundColor Green
 Write-Host "N-gram:    OFF"; Write-Host "Cache:     llama default; forced cache-reuse OFF"; Write-Host "Tensor:    automatic; explicit split OFF"
+Write-Host "Vision:    OFF / no sidecar"
+Write-Host "Governor:  hash-bound final verification" -ForegroundColor Green
 Write-Host "Telemetry: observation-only auto bottleneck" -ForegroundColor Green
 Write-Host "Fabric:    $($profileEnvelope.profile.profile_name) [$($profileEnvelope.canonical_hash.Substring(0, 12))]" -ForegroundColor Green
 Write-Host "Files:     autonomous inside this project"; Write-Host "Outside:   approval required"; Write-Host ""
@@ -152,6 +166,9 @@ $server = Start-Process -FilePath $ServerExe -ArgumentList $serverArgs -PassThru
 $startupMs = 0
 $exitCode = 1
 $previousTelemetry = $env:BLACK_CODE_TELEMETRY_PATH
+$previousGovernorDir = $env:BLACK_CODE_GOVERNOR_DIR
+$previousProjectRoot = $env:BLACK_CODE_PROJECT_ROOT
+$previousVerifyScript = $env:BLACK_CODE_VERIFY_SCRIPT
 
 try {
     $ready = $false
@@ -167,9 +184,12 @@ try {
     if (-not $models.data) { throw "llama-server is healthy but /v1/models returned no model." }
 
     Write-Host "Local model server VERIFIED with IQ2_M + persistent repo delta index." -ForegroundColor Green
-    Write-Host "Starting OpenCode with autonomous project editing..." -ForegroundColor Green; Write-Host ""
+    Write-Host "Starting OpenCode with BLACK completion governor..." -ForegroundColor Green; Write-Host ""
     $env:OPENCODE_CONFIG = $ConfigPath
     $env:BLACK_CODE_TELEMETRY_PATH = $telemetryPath
+    $env:BLACK_CODE_GOVERNOR_DIR = $GovernorDir
+    $env:BLACK_CODE_PROJECT_ROOT = $projectRoot
+    $env:BLACK_CODE_VERIFY_SCRIPT = Resolve-RuntimeFile "verification-gate.ps1"
     Refresh-Path
     $opencode = (Get-Command "opencode" -ErrorAction Stop).Source
     & $opencode "." "--model" $ModelId
@@ -178,6 +198,9 @@ try {
 finally {
     if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue; $server.WaitForExit() }
     if ($null -eq $previousTelemetry) { Remove-Item Env:BLACK_CODE_TELEMETRY_PATH -ErrorAction SilentlyContinue } else { $env:BLACK_CODE_TELEMETRY_PATH = $previousTelemetry }
+    if ($null -eq $previousGovernorDir) { Remove-Item Env:BLACK_CODE_GOVERNOR_DIR -ErrorAction SilentlyContinue } else { $env:BLACK_CODE_GOVERNOR_DIR = $previousGovernorDir }
+    if ($null -eq $previousProjectRoot) { Remove-Item Env:BLACK_CODE_PROJECT_ROOT -ErrorAction SilentlyContinue } else { $env:BLACK_CODE_PROJECT_ROOT = $previousProjectRoot }
+    if ($null -eq $previousVerifyScript) { Remove-Item Env:BLACK_CODE_VERIFY_SCRIPT -ErrorAction SilentlyContinue } else { $env:BLACK_CODE_VERIFY_SCRIPT = $previousVerifyScript }
     $sessionCompletedAt = Get-Date
     $totalMs = [Math]::Round(($sessionCompletedAt - $sessionStartedAt).TotalMilliseconds)
     try {
