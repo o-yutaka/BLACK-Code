@@ -72,9 +72,11 @@ jobs:
         run: |
           $work = Join-Path $env:RUNNER_TEMP 'black-pipeline-verifier-smoke'
           New-Item -ItemType Directory -Force -Path $work | Out-Null
-          $failed = $false
-          try { ./local-runtime/verify-model-pipeline-7.27.ps1 -ModelWorkDir $work | Out-Null } catch { $failed = $true }
-          if (-not $failed -and $LASTEXITCODE -eq 0) { throw 'pipeline verifier accepted missing artifact/manifest' }
+          & ./local-runtime/verify-model-pipeline-7.27.ps1 -ModelWorkDir $work | Out-Null
+          $expectedCode = $LASTEXITCODE
+          if ($expectedCode -eq 0) { throw 'pipeline verifier accepted missing artifact/manifest' }
+          Write-Host "Verifier correctly failed closed with exit code $expectedCode"
+          $global:LASTEXITCODE = 0
       - name: Smoke partial shard is never complete
         shell: powershell
         run: |
