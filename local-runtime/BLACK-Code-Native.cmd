@@ -1,17 +1,6 @@
 @echo off
 setlocal EnableExtensions
 
-if defined WSL_INTEROP (
-  echo ERROR: WSL interop detected. BLACK Code canonical runtime is native Windows only.
-  echo Open Windows PowerShell or CMD directly and run this file there.
-  exit /b 2
-)
-if defined WSL_DISTRO_NAME (
-  echo ERROR: WSL environment detected. BLACK Code canonical runtime is native Windows only.
-  echo Open Windows PowerShell or CMD directly and run this file there.
-  exit /b 2
-)
-
 set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%PS%" (
   echo ERROR: Native Windows PowerShell not found: %PS%
