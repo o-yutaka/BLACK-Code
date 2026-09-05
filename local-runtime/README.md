@@ -7,7 +7,8 @@ This directory is the canonical Windows local coding runtime for BLACK Code.
 ```text
 OpenCode TUI
   -> BLACK execution instructions + repo delta context + Claude/BLACK rule bridge
-  -> Qwen3.8-27B Uncensored through llama.cpp CUDA
+  -> Qwen3.8-27B Uncensored BLACK 7.27 through llama.cpp CUDA
+  -> external Uncensored Q4_0 MTP draft, max 2
   -> project-local tools
   -> affected verification
   -> black-code-verify final gate
@@ -15,30 +16,57 @@ OpenCode TUI
   -> telemetry / bottleneck / session evidence
 ```
 
-The older Python Claude-style runtime is not a second canonical runtime. Its useful ideas are treated as donor capabilities: compatible rule hierarchy, continuity of unverified state, identical-failure repeat prevention, and evidence-gated completion. Execution remains OpenCode + llama.cpp so BLACK Code keeps one real runtime rather than two diverging agents.
+The older Python Claude-style runtime is donor/reference only. BLACK itself remains separate; verified BLACK Code experience may later feed BLACK's Code Knowledge capability.
 
-BLACK itself is not imported or modified. BLACK Code remains the source/testbed side; only verified knowledge/experience may be bridged into BLACK's Code Knowledge capability later.
+## Fixed model policy
 
-## Model policy
+BLACK Code has one canonical main model:
 
-Verified baseline:
+- file: `Qwen3.8-27B-Uncensored-BLACK-UD-IQ2_XXS.gguf`
+- parent: `JonathanColetti/Qwen3.8-27B-Uncensored` at pinned revision `5bb7aa90f0efef548e87005b1fb7658e522b6b7f`
+- main model: no-MTP, text/code only
+- target byte window: 7.20..7.35 GB decimal
+- quantization: exact tensor precision map from the pinned Unsloth `Qwen3.8-27B-UD-IQ2_XXS.gguf` reference, applied to the pinned uncensored parent with the pinned uncensored imatrix
+- output SHA-256: generated on the first successful local build and then pinned in `model-7.27.local.json`
+- MTP: separate `Qwen3.8-27B-Uncensored-draft-Q4_0.gguf`, fixed SHA-256, max draft width 2
+- vision: absent
 
-- Repository: `JonathanColetti/Qwen3.8-27B-Uncensored-GGUF`
-- File: `Qwen3.8-27B-Uncensored-IQ2_M.gguf`
-- Published size: about 10.6 GB
-- SHA-256: `28e0f88eea09438220a086c2a1e5180ad83764c748856a28fd63ce1c0fbef187`
-- MTP: fused / included
+The former 10.6 GB IQ2_M model is superseded. Setup does not silently fall back to it.
 
-The planned ~7.27 GB uncensored build is a **candidate**, not a claimed artifact. It is not promoted until the actual GGUF exists and passes the same runtime, coding, uncensored-regression, VRAM, and verified-task-latency gates. Until then the 10.6 GB IQ2_M file remains the reproducible baseline.
+## How the first build works
 
-Vision is not part of the canonical runtime and no vision sidecar is loaded.
+`setup.ps1` makes the fixed model automatically if it does not already exist:
+
+```text
+pinned uncensored HF parent
+  -> parallel HF/Xet snapshot transfer
+  -> pinned llama.cpp converter
+  -> no-MTP F16 GGUF
+  -> remote Range-only parse of pinned 7.27 reference tensor directory
+  -> exact tensor-name inventory match
+  -> pinned uncensored imatrix
+  -> llama-quantize --tensor-type-file dry-run
+  -> real quantization
+  -> 7.20..7.35 GB size gate
+  -> GGUF magic check
+  -> SHA-256
+  -> model-7.27.local.json
+```
+
+The reference 7.27 GB GGUF is not downloaded in full just to obtain its tensor map. Only its GGUF header/tensor directory is fetched with HTTP byte ranges. A server that ignores Range requests is rejected.
+
+The build needs roughly 125 GB of free temporary working space because the pinned parent and intermediate F16 GGUF coexist during conversion. Unless `-KeepIntermediate` is explicitly used by the builder, the large parent snapshot is removed after F16 conversion and the F16/intermediate files are removed after the final model is pinned.
+
+## Hugging Face transfer
+
+Large parent snapshot transfer uses `hf_xet` high-performance mode. Fixed standalone artifacts such as the MTP draft use `hf-parallel-download.ps1`, which defaults to 8 byte-range workers, validates chunk lengths and joined length, and falls back to resumable single-stream transfer if range mode fails. Artifact hashes are still checked after transfer.
 
 ## One-command use
 
-First run:
+First installation/update from the repository:
 
-```bat
-BLACK-CODE.cmd
+```powershell
+powershell -ExecutionPolicy Bypass -File .\local-runtime\setup.ps1
 ```
 
 After bootstrap:
@@ -47,13 +75,13 @@ After bootstrap:
 black-code
 ```
 
-The final verification command installed beside it is:
+Final verification:
 
 ```bat
 black-code-verify
 ```
 
-For a project without a sufficiently strong standard verify/test/build path, exercise the changed behavior explicitly:
+For a project without a sufficiently strong standard verify/test/build path:
 
 ```bat
 black-code-verify -RuntimeCommand "<real entrypoint or smoke command>"
@@ -61,39 +89,26 @@ black-code-verify -RuntimeCommand "<real entrypoint or smoke command>"
 
 No-op runtime commands are rejected.
 
-## RTX 3060 12 GB speed baseline
+## RTX 3060 12 GB canonical runtime
 
 ```text
-model                 IQ2_M 10.6 GB verified baseline
-context               auto: 8K / 12K / 16K by tracked-file count
-output cap            auto: 4K / 6K / 8K
+main model            BLACK UD-IQ2_XXS 7.27 GB-class, locally SHA-pinned
+MTP draft             Uncensored Q4_0 external draft
+MTP draft max         2
+context               auto 8K / 12K / 16K
+output cap            auto 4K / 6K / 8K
 fit target headroom   1,024 MiB
 parallel model slots  1
-MTP                    always on
-MTP draft max          2
-ngram-mod              off
-forced cache-reuse     off
-explicit tensor split off
 KV K/V                 q8_0 / q8_0
 thinking               off
 vision                 off
+ngram-mod              off
+forced cache-reuse     off
 ```
 
-Independent CPU-side reads, indexing, hashing and checks may be parallelized. Local 27B model inference remains one active slot on the 12 GB GPU.
-
-## Hugging Face download
-
-The model download uses `hf-parallel-download.ps1` with **8 range workers by default**. It probes HTTP range support, downloads byte ranges concurrently, validates every chunk size, concatenates in order, then the setup performs the canonical GGUF SHA-256 check. If the endpoint does not support range transfer or a parallel chunk fails, setup falls back to the resumable single-stream path instead of accepting a partial model.
-
-Override setup concurrency when needed:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\local-runtime\setup.ps1 -HfDownloadWorkers 12
-```
+Independent CPU-side reads, indexing, hashing and checks may be parallelized. Local 27B inference remains one active slot.
 
 ## Execution and verification
-
-Canonical path:
 
 ```text
 INDEX -> RULES -> DELTA -> BATCH -> EDIT
@@ -102,56 +117,20 @@ INDEX -> RULES -> DELTA -> BATCH -> EDIT
       -> HASH_BIND -> RECORD
 ```
 
-`STRUCTURAL_OK` means only that changed material parses at the relevant structural level. It is not completion evidence. `black-code-verify` selects the strongest standard project checks it can find (for example Node verify/test/build, Python pytest, Cargo test, Go test, or dotnet test). When no strong standard path exists it returns `BLOCKED` and requires a real task-specific runtime command.
+`STRUCTURAL_OK` is never completion evidence. `black-code-verify` selects the strongest standard project checks it can find; when that is insufficient it returns `BLOCKED` until a real task-specific runtime command is supplied.
 
-`opencode-governor.js` binds successful final verification to the current workspace fingerprint. Later edits invalidate the token. If the model tries to emit a final completion after an unverified change, the generated completion is replaced with `BLACK VERIFY: UNVERIFIED` instead of being presented as finished work.
+`opencode-governor.js` binds successful final verification to the current workspace fingerprint. Later edits invalidate the token, unverified state survives restarts, and identical failed shell commands against the same workspace state are rejected.
 
-The governor also persists unverified continuity across BLACK Code sessions and blocks an identical failed shell command from being retried against the exact same workspace state.
+## Repository context
 
-## Context and repository delta
-
-`repo-index.ps1` persists HEAD, changed files, package roots, test files, and likely affected tests. Clean same-HEAD sessions reuse the index; changed HEAD/worktree state gets a delta refresh rather than a full rediscovery.
-
-`rule-bridge.ps1` imports compatible project guidance from:
-
-- `~/.claude/CLAUDE.md`
-- ancestor/project `CLAUDE.md`
-- ancestor/project `CLAUDE.local.md`
-- project `BLACK.md`
-- non-fenced `@file` references, recursively up to depth 5
-
-OpenCode natively discovers project/global `.claude/skills`, `.agents/skills`, and `.opencode/skills`, so BLACK Code does not maintain a duplicate skill loader.
-
-## Evidence and bottlenecks
-
-OpenCode tool timings and llama.cpp prompt/decode timings remain observation-only. Sessions record execution-profile hash, duration, project identity, GPU/VRAM start state, exit code and log paths under `%LOCALAPPDATA%\BLACK-Code\runtime\execution-fabric\sessions.jsonl`.
-
-Process exit alone is not task verification. Final task verification is governed separately by the hash-bound gate.
-
-## Setup refresh
-
-Normal setup refreshes launch files and downloads the baseline model only if missing or invalid:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\local-runtime\setup.ps1
-```
-
-Refresh llama.cpp without forcing a model download:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\local-runtime\setup.ps1 -ForceLlama
-```
-
-Full refresh:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\local-runtime\setup.ps1 -Force
-```
+`repo-index.ps1` persists HEAD, changed files, package roots, test files and likely affected tests. `rule-bridge.ps1` imports compatible `CLAUDE.md`, `CLAUDE.local.md`, `BLACK.md` and non-fenced `@file` references. OpenCode's native skill discovery remains authoritative; BLACK Code does not duplicate it.
 
 ## Diagnostics
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\BLACK-Code\launcher\doctor.ps1"
 ```
+
+Doctor exits non-zero if the fixed model, its local SHA manifest, MTP draft, governed runtime components or canonical state are invalid.
 
 The model server binds only to `127.0.0.1`; outside-project access remains approval-gated.
