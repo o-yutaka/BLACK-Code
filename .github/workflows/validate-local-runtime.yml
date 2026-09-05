@@ -19,3 +19,11 @@ jobs:
       - name: Verify BLACK Code Execution Fabric
         shell: powershell
         run: ./local-runtime/verify.ps1
+      - name: Smoke resilient parent-transfer handoff
+        shell: powershell
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "black-code-parent-transfer-smoke"
+          ./local-runtime/download-parent-7.27.ps1 -WorkDir $root -StatusOnly
+          ./local-runtime/setup-resilient.ps1 -ModelWorkDir $root -TransferStatusOnly
+          $state = Join-Path $root "parent-download.state.json"
+          if (Test-Path -LiteralPath $state) { throw "Status-only smoke unexpectedly created transfer state." }
