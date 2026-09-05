@@ -86,7 +86,7 @@ if ($checks.manifest_exists -and $null -ne $modelSha) {
     } catch { $checks.manifest_contract = $false }
 }
 
-$required = @('model_exists','manifest_exists','model_gguf','size_gate','sha_match','manifest_contract','f16_provenance_consistent','tensor_evidence_consistent')
+$required = @('model_exists','manifest_exists','model_gguf','parent_state_verified','size_gate','sha_match','manifest_contract','f16_provenance_consistent','tensor_evidence_consistent')
 $failures = @($required | Where-Object { -not [bool]$checks[$_] })
 $result = [ordered]@{
     schema_version = "1.0"
