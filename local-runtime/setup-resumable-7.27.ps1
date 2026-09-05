@@ -80,10 +80,12 @@ if ($ForceLlama) { $args.ForceLlama = $true }
 if ($PurgeModelDownloadCache) { $args.PurgeModelDownloadCache = $true }
 
 $previousPrepared = $env:BLACK_CODE_PARENT_PREPARED
+$previousOffline = $env:HF_HUB_OFFLINE
 try {
     if ($parentPrepared) {
         $env:BLACK_CODE_PARENT_PREPARED = "1"
-        Write-Host "==> Parent VERIFIED_COMPLETE; canonical builder will validate locally and skip duplicate HF network access" -ForegroundColor Green
+        $env:HF_HUB_OFFLINE = "1"
+        Write-Host "==> Parent VERIFIED_COMPLETE; downstream hf validation is forced offline (no duplicate Hub HTTP/Xet transfer)" -ForegroundColor Green
     } else {
         Remove-Item Env:BLACK_CODE_PARENT_PREPARED -ErrorAction SilentlyContinue
     }
@@ -93,4 +95,6 @@ try {
 } finally {
     if ($null -eq $previousPrepared) { Remove-Item Env:BLACK_CODE_PARENT_PREPARED -ErrorAction SilentlyContinue }
     else { $env:BLACK_CODE_PARENT_PREPARED = $previousPrepared }
+    if ($null -eq $previousOffline) { Remove-Item Env:HF_HUB_OFFLINE -ErrorAction SilentlyContinue }
+    else { $env:HF_HUB_OFFLINE = $previousOffline }
 }
