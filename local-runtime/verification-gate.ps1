@@ -44,7 +44,12 @@ function Invoke-RuntimeCheck([string]$Command) {
 }
 
 $git = Resolve-CommandPath @("git.exe", "git")
+$gitRepo = $false
 if ($git) {
+    & $git -C $Root rev-parse --is-inside-work-tree *> $null
+    $gitRepo = $LASTEXITCODE -eq 0
+}
+if ($gitRepo) {
     Invoke-Check "git-diff-check" $git @("-C", $Root, "diff", "--check")
 }
 
@@ -87,7 +92,7 @@ elseif ((Test-Path -LiteralPath $pyproject) -or (Test-Path -LiteralPath $require
     $python = Resolve-CommandPath @("python.exe", "python", "py.exe", "py")
     if (-not $python) { throw "Python project detected but Python was not found." }
     $changedPython = @()
-    if ($git) {
+    if ($gitRepo) {
         $changedPython = @(& $git -C $Root diff --name-only HEAD -- "*.py" 2>$null)
         $changedPython += @(& $git -C $Root ls-files --others --exclude-standard -- "*.py" 2>$null)
     }
