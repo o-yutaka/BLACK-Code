@@ -40,8 +40,8 @@ function New-BlackCodeExecutionProfile(
     [int]$FitTargetMiB
 ) {
     $body = [ordered]@{
-        schema_version = "1.3"
-        profile_name = "black-execution-fabric-governed-v2"
+        schema_version = "1.4"
+        profile_name = "black-execution-fabric-governed-v3-7.27"
         design_source = "BLACK atomize/overlap/recompose/utility/learning-policy pattern; copied as design only"
         authority = [ordered]@{
             may_edit_project = $true
@@ -56,7 +56,7 @@ function New-BlackCodeExecutionProfile(
             "context.repo-delta-index",
             "rules.claude-black-bridge",
             "tool.prefetch-batch",
-            "decode.iq2m-mtp2",
+            "decode.black-7.27-external-mtp2",
             "verify.structural-not-success",
             "verify.targeted-then-final",
             "verify.hash-bound-final",
@@ -66,15 +66,16 @@ function New-BlackCodeExecutionProfile(
         rejected_atoms = @(
             [ordered]@{ atom = "decode.ngram-mod"; reason = "measured_agentic_regression"; default_enabled = $false },
             [ordered]@{ atom = "prompt.cache-reuse-256"; reason = "measured_agentic_regression_or_unproven_benefit"; default_enabled = $false },
-            [ordered]@{ atom = "decode.mtp4-on-iq2m"; reason = "published_iq2m_code_benchmark_favors_mtp2_among_tested_widths"; default_enabled = $false },
             [ordered]@{ atom = "runtime.parallel-model-inference"; reason = "12gb_vram_single_27b_runtime"; default_enabled = $false },
-            [ordered]@{ atom = "runtime.vision-sidecar"; reason = "text-code-only-canonical"; default_enabled = $false }
+            [ordered]@{ atom = "runtime.vision-sidecar"; reason = "text-code-only-canonical"; default_enabled = $false },
+            [ordered]@{ atom = "decode.iq2m-fallback"; reason = "7.27gb_model_is_now_fixed_canonical"; default_enabled = $false }
         )
         inference = [ordered]@{
-            baseline_model = "Qwen3.8-27B-Uncensored-IQ2_M.gguf"
-            baseline_status = "verified"
-            candidate_7_27gb_status = "not_promoted_until_built_and_verified"
-            quantization = "IQ2_M"
+            canonical_model = "Qwen3.8-27B-Uncensored-BLACK-UD-IQ2_XXS.gguf"
+            canonical_status = "fixed-local-build-hash-pinned"
+            quantization = "BLACK-UD-IQ2_XXS-exact-reference-map"
+            no_mtp_main = $true
+            external_mtp_draft = "Qwen3.8-27B-Uncensored-draft-Q4_0.gguf"
             speculative_types = @("draft-mtp")
             mtp_draft_max = 2
             mtp_draft_min = 0
