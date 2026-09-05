@@ -26,8 +26,7 @@ function Normalize-BlackCodePath([object]$Value) {
 function Invoke-BlackCodeGitLines([object]$Git,[string]$Root,[string[]]$Args) {
     $rows = @(& $Git.Source -C $Root @Args 2>$null)
     if ($LASTEXITCODE -ne 0) { return @() }
-    $result = @($rows | ForEach-Object { Normalize-BlackCodePath $_ } | Where-Object { $_ } | Sort-Object -Unique)
-    return ,$result
+    return @($rows | ForEach-Object { Normalize-BlackCodePath $_ } | Where-Object { $_ } | Sort-Object -Unique)
 }
 
 function Get-BlackCodeRepoIndex(
