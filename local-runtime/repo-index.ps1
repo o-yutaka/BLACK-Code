@@ -119,6 +119,8 @@ function Get-BlackCodeRepoIndex(
     }
     $changedFiles = @($changed | Sort-Object -Unique)
 
+    # New/untracked files are first-class delta and affect likely-test mapping;
+    # the capsule below keeps them visible without pre-injecting the full tree.
     $likely = [System.Collections.Generic.List[string]]::new()
     foreach ($changedFile in $changedFiles) {
         $stem = [IO.Path]::GetFileNameWithoutExtension($changedFile)

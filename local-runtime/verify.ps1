@@ -27,7 +27,7 @@ function Invoke-Native([string]$File,[string[]]$Arguments,[string]$Label) {
 $requiredFiles=@(
     "black-code.ps1","setup.ps1","doctor.ps1","execution-fabric.ps1","repo-index.ps1","rule-bridge.ps1",
     "verification-gate.ps1","hf-parallel-download.ps1","build-model-7.27.ps1","extract-quant-map.mjs",
-    "model-7.27.lock.json","runtime.lock.json","MODEL_7_27GB.md","black-code-execution.md","analyze-bottleneck.ps1",
+    "model-7.27.lock.json","runtime.lock.json","MODEL_7_27GB.md","black-code-execution.md","black-code-rules.md","analyze-bottleneck.ps1",
     "opencode-telemetry.js","opencode-governor.js","verify.ps1","CANONICAL_ARCHITECTURE.md","SPEED_PROFILE.md"
 )
 foreach($name in $requiredFiles){if(-not(Test-Path -LiteralPath (Join-Path $RuntimeRoot $name))){throw "Required runtime file missing: $name"}}
