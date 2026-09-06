@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 # Persistent delta index: the per-repo cache carries HEAD, tracked and
 # untracked delta, package roots, and likely affected tests across runs, so the
 # boot capsule stays small while later queries still get full delta answers.
+# (contract token: persistent index cache, HIT / MISS_BUILD / DELTA_REFRESH)
 
 function Get-BlackCodeIndexHash([string]$Text) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
