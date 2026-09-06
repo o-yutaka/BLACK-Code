@@ -100,7 +100,11 @@ function Assert-RuntimeIntegrity([string]$Path) {
     $server = [string]$state.llama_server
     if (-not (Test-Path -LiteralPath $server -PathType Leaf)) { throw "Pinned llama-server runtime was not found: $server" }
     $global:LASTEXITCODE = 0
-    $llamaVersion = ((& $server --version 2>&1) | Out-String).Trim()
+    $VOut=[IO.Path]::GetTempFileName();$VErr=[IO.Path]::GetTempFileName()
+    try {
+        $null = Start-Process -FilePath $server -ArgumentList "--version" -WorkingDirectory $env:SystemRoot -Wait -PassThru -RedirectStandardOutput $VOut -RedirectStandardError $VErr
+        $llamaVersion = (((Get-Content -Raw -LiteralPath $VOut -ErrorAction SilentlyContinue)+(Get-Content -Raw -LiteralPath $VErr -ErrorAction SilentlyContinue)).Trim())
+    } finally {Remove-Item -Force -ErrorAction SilentlyContinue $VOut,$VErr}
     $commitPrefix = ([string]$runtimeLock.llama_cpp.target_commit).Substring(0, 8)
     if ($LASTEXITCODE -ne 0 -or ($llamaVersion -notmatch [regex]::Escape([string]$runtimeLock.llama_cpp.binary_tag) -and $llamaVersion -notmatch [regex]::Escape($commitPrefix) -and $llamaVersion -notmatch '(?i)build\s+10809')) { throw "llama.cpp runtime version mismatch" }
     [void]$Checks.Add("runtime-integrity")

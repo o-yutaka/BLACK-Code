@@ -275,7 +275,26 @@ try {
         }
 
         $process.Refresh()
-        $exitCode = if ($process.HasExited) { $process.ExitCode } else { -1 }
+        if (-not $process.HasExited) { $process.WaitForExit(30000) | Out-Null }
+        $exitReadable = $false
+        $exitCode = -1
+        try { $exitCode = [int]$process.ExitCode; $exitReadable = $true } catch { $exitReadable = $false }
+
+        if (-not $exitReadable) {
+            try {
+                Assert-SnapshotComplete $SourceDir
+                Write-State "PARENT_SNAPSHOT" "VERIFIED_COMPLETE" ([int]$process.Id) "hf.exe exited but its exit code was not readable (Windows PowerShell 5.1 race); all shards named by model.safetensors.index.json were independently verified present and non-empty."
+                Write-Host "BLACK 7.27 parent snapshot VERIFIED COMPLETE (exit code unreadable; file verification passed)" -ForegroundColor Green
+                Write-Host "Parent: $SourceDir"
+                Write-Host "State:  $StatePath"
+                break
+            } catch {
+                $detail = if (Test-Path -LiteralPath $StderrPath) { ((Get-Content -Tail 40 -LiteralPath $StderrPath -ErrorAction SilentlyContinue) -join "`n").Trim() } else { "" }
+                Write-State "PARENT_SNAPSHOT" "FAILED" ([int]$process.Id) "hf.exe finished but exit code was unreadable and snapshot verification did not pass. $detail"
+                throw "Pinned parent download finished but its exit code was unreadable AND snapshot verification failed; refusing to continue. $detail"
+            }
+        }
+
         if ($exitCode -ne 0) {
             $detail = if (Test-Path -LiteralPath $StderrPath) { ((Get-Content -Tail 40 -LiteralPath $StderrPath -ErrorAction SilentlyContinue) -join "`n").Trim() } else { "" }
             Write-State "PARENT_SNAPSHOT" "FAILED" ([int]$process.Id) "hf.exe exit=$exitCode $detail"

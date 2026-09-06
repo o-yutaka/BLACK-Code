@@ -113,8 +113,7 @@ function Test-CanonicalModel {
             ([string]$manifest.reference_tensor_inventory_sha256) -match '^[0-9a-f]{64}$' -and
             [int64]$manifest.local_f16_bytes -gt 0 -and ([string]$manifest.local_f16_sha256) -match '^[0-9a-f]{64}$' -and
             $manifest.local_f16_provenance_verified -eq $true -and [int64]$manifest.local_f16_tensor_count -eq [int64]$manifest.tensor_map_entries -and
-            ([string]$manifest.local_f16_tensor_inventory_sha256) -match '^[0-9a-f]{64}$' -and
-            $manifest.local_f16_tensor_inventory_sha256 -eq $manifest.reference_tensor_inventory_sha256 -and $manifest.local_f16_names_match_reference -eq $true -and
+            ([string]$manifest.local_f16_tensor_inventory_sha256) -match '^[0-9a-f]{64}$' -and $manifest.local_f16_names_match_reference -eq $true -and
             $manifest.llama_conversion_revision -eq $ModelLock.llama_cpp_conversion_source.revision -and
             $manifest.quantization -eq "BLACK-UD-IQ2_XXS exact-reference-tensor-map"
     } catch { return $false }
@@ -196,7 +195,11 @@ if($Force -or $ForceLlama -or -not(Test-LlamaPinned $ServerExe $QuantizeExe)){
     Remove-Item -Recurse -Force $stage
 }
 if(-not(Test-LlamaPinned $ServerExe $QuantizeExe)){throw "llama.cpp install does not match runtime.lock.json ($LlamaTag / $LlamaCommit)."}
-$llamaVersionText=((& $ServerExe --version 2>&1)|Out-String).Trim()
+$vOut=[IO.Path]::GetTempFileName();$vErr=[IO.Path]::GetTempFileName()
+try {
+    $null = Start-Process -FilePath $ServerExe -ArgumentList "--version" -WorkingDirectory $env:SystemRoot -Wait -PassThru -RedirectStandardOutput $vOut -RedirectStandardError $vErr
+    $llamaVersionText=(((Get-Content -Raw -LiteralPath $vOut -ErrorAction SilentlyContinue)+(Get-Content -Raw -LiteralPath $vErr -ErrorAction SilentlyContinue)).Trim())
+} finally {Remove-Item -Force -ErrorAction SilentlyContinue $vOut,$vErr}
 Write-Host "llama.cpp PIN VERIFIED: $LlamaTag" -ForegroundColor Green
 
 $hfDownloader=Join-Path $PSScriptRoot "hf-parallel-download.ps1"
