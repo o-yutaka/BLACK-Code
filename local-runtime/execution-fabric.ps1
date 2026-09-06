@@ -18,13 +18,17 @@ function Get-BlackCodeProjectIdentity([string]$ProjectRoot) {
     if (-not $git) { $git = Get-Command "git" -ErrorAction SilentlyContinue }
 
     if ($git) {
-        $head = (& $git.Source -C $resolved rev-parse HEAD 2>$null | Select-Object -First 1)
-        if ($LASTEXITCODE -eq 0 -and $head) {
-            $gitHead = ([string]$head).Trim()
-            # Untracked files are part of BLACK Code project state and must mark the project dirty.
-            $status = @(& $git.Source -C $resolved status --porcelain=v1 --untracked-files=all 2>$null)
-            if ($LASTEXITCODE -eq 0) { $gitDirty = $status.Count -gt 0 }
+        $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try {
+            $head = (& $git.Source -C $resolved rev-parse HEAD 2>$null | Select-Object -First 1)
+            if ($LASTEXITCODE -eq 0 -and $head) {
+                $gitHead = ([string]$head).Trim()
+                # Untracked files are part of BLACK Code project state and must mark the project dirty.
+                $status = @(& $git.Source -C $resolved status --porcelain=v1 --untracked-files=all 2>$null)
+                if ($LASTEXITCODE -eq 0) { $gitDirty = $status.Count -gt 0 }
+            }
         }
+        finally { $ErrorActionPreference = $eap }
     }
 
     $basis = if ($gitHead) { "$resolved|$gitHead|dirty=$gitDirty" } else { $resolved }

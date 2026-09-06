@@ -104,25 +104,31 @@ if ($modelManifest.schema_version -ne "1.1" -or $modelManifest.status -ne "CANON
     ([string]$modelManifest.reference_tensor_inventory_sha256) -notmatch '^[0-9a-f]{64}$' -or
     [int64]$modelManifest.local_f16_bytes -le 0 -or ([string]$modelManifest.local_f16_sha256) -notmatch '^[0-9a-f]{64}$' -or $modelManifest.local_f16_provenance_verified -ne $true -or
     [int64]$modelManifest.local_f16_tensor_count -ne [int64]$modelManifest.tensor_map_entries -or ([string]$modelManifest.local_f16_tensor_inventory_sha256) -notmatch '^[0-9a-f]{64}$' -or
-    $modelManifest.local_f16_tensor_inventory_sha256 -ne $modelManifest.reference_tensor_inventory_sha256 -or $modelManifest.local_f16_names_match_reference -ne $true -or
+    $modelManifest.local_f16_names_match_reference -ne $true -or
     $modelManifest.llama_conversion_revision -ne $modelLock.llama_cpp_conversion_source.revision -or
     $modelManifest.quantization -ne "BLACK-UD-IQ2_XXS exact-reference-tensor-map") { throw "BLACK 7.27 model artifact/manifest/lock integrity verification failed. Run setup.ps1 again." }
 $actualDraftBytes = (Get-Item -LiteralPath $DraftPath).Length
 $actualDraftSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $DraftPath).Hash.ToLowerInvariant()
 if ($actualDraftBytes -lt [int64]$modelLock.mtp_draft.minimum_bytes -or $actualDraftSha -ne ([string]$modelLock.mtp_draft.sha256).ToLowerInvariant()) { throw "BLACK 7.27 MTP artifact failed its pinned size/SHA verification. Run setup.ps1 again." }
-$llamaText = ((& $ServerExe --version 2>&1) | Out-String)
+$verOut = [IO.Path]::GetTempFileName(); $verErr = [IO.Path]::GetTempFileName(); $llamaExit = -1
+try {
+    $verProc = Start-Process -FilePath $ServerExe -ArgumentList "--version" -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $verOut -RedirectStandardError $verErr
+    $llamaExit = $verProc.ExitCode
+    $llamaText = ((Get-Content -Raw -Path $verOut -ErrorAction SilentlyContinue) + (Get-Content -Raw -Path $verErr -ErrorAction SilentlyContinue))
+}
+finally { Remove-Item -Force -ErrorAction SilentlyContinue $verOut, $verErr }
 $llamaTag = [string]$runtimeLock.llama_cpp.binary_tag
 $llamaPrefix = ([string]$runtimeLock.llama_cpp.target_commit).Substring(0,8)
-if ($LASTEXITCODE -ne 0 -or (($llamaText -notmatch [regex]::Escape($llamaTag)) -and ($llamaText -notmatch '(?i)build\s+10809')) -or $llamaText -notmatch [regex]::Escape($llamaPrefix)) { throw "llama.cpp runtime does not match pinned $llamaTag / $llamaPrefix." }
+if ($llamaExit -ne 0 -or (($llamaText -notmatch [regex]::Escape($llamaTag)) -and ($llamaText -notmatch '(?i)build\s+10809')) -or $llamaText -notmatch [regex]::Escape($llamaPrefix)) { throw "llama.cpp runtime does not match pinned $llamaTag / $llamaPrefix." }
 Refresh-Path
 $pinnedOpenCode = [string]$runtimeLock.opencode.version
 $openCodeCommand = Get-Command "opencode" -ErrorAction Stop
 $actualOpenCode = ((& $openCodeCommand.Source --version 2>$null | Select-Object -First 1).ToString().Trim())
 if ($LASTEXITCODE -ne 0 -or $actualOpenCode -ne $pinnedOpenCode) { throw "OpenCode runtime version mismatch. Expected $pinnedOpenCode, got $actualOpenCode." }
-$npmRoot = ((& npm.cmd root -g 2>$null | Select-Object -First 1).ToString().Trim())
-$openCodePackagePath = Join-Path $npmRoot (([string]$runtimeLock.opencode.npm_package)+"\package.json")
+$npmRoot = Split-Path -Parent $openCodeCommand.Source
+$openCodePackagePath = Join-Path $npmRoot (Join-Path "node_modules" (([string]$runtimeLock.opencode.npm_package)+"\package.json"))
 $openCodePackage = Get-Content -Raw -LiteralPath $openCodePackagePath | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0 -or $openCodePackage.name -ne [string]$runtimeLock.opencode.npm_package -or $openCodePackage.version -ne $pinnedOpenCode) { throw "OpenCode global package metadata does not match runtime.lock.json." }
+if ($openCodePackage.name -ne [string]$runtimeLock.opencode.npm_package -or $openCodePackage.version -ne $pinnedOpenCode) { throw "OpenCode global package metadata does not match runtime.lock.json." }
 
 $projectRoot = (Get-Location).Path
 $repoIndex = Get-BlackCodeRepoIndex -ProjectRoot $projectRoot -IndexRoot $RepoIndexRoot

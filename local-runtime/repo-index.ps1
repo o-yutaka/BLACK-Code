@@ -24,7 +24,9 @@ function Normalize-BlackCodePath([object]$Value) {
 }
 
 function Invoke-BlackCodeGitLines([object]$Git,[string]$Root,[string[]]$GitArgs) {
-    $rows = @(& $Git.Source -C $Root @GitArgs 2>$null)
+    $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { $rows = @(& $Git.Source -C $Root @GitArgs 2>$null) }
+    finally { $ErrorActionPreference = $eap }
     if ($LASTEXITCODE -ne 0) { return @() }
     return @($rows | ForEach-Object { Normalize-BlackCodePath $_ } | Where-Object { $_ } | Sort-Object -Unique)
 }
@@ -61,8 +63,11 @@ function Get-BlackCodeRepoIndex(
     }
 
     # Windows PowerShell 5.1 cannot invoke an application directly in the
-    # middle of a parenthesized pipeline on some UNC-backed worktrees.
-    $headRows = @(& $git.Source -C $resolved rev-parse HEAD 2>$null)
+    # middle of a parenthesized pipeline on some UNC-backed worktrees and
+    # promotes native stderr to a terminating error under StrictMode/Stop.
+    $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { $headRows = @(& $git.Source -C $resolved rev-parse HEAD 2>$null) }
+    finally { $ErrorActionPreference = $eap }
     $head = $headRows | Select-Object -First 1
     if ($LASTEXITCODE -ne 0 -or -not $head) { $head = $null } else { $head = ([string]$head).Trim() }
 
