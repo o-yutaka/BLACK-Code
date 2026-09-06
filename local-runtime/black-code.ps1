@@ -8,6 +8,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $global:LASTEXITCODE = 0
+# OpenCode auto-updates itself on startup by default and would re-resolve the
+# global npm package to @latest between boots, silently unbinding the runtime
+# pin (observed 2026-09-07: 1.18.28 -> 1.18.29 mid-boot). Disable the startup
+# update check for every opencode invocation we spawn.
+$env:OPENCODE_DISABLE_AUTOUPDATE = "true"
 
 $InstallBase = Join-Path $env:LOCALAPPDATA "BLACK-Code"
 $RuntimeDir = Join-Path $InstallBase "runtime"
@@ -125,8 +130,24 @@ if ($llamaExit -ne 0 -or (($llamaText -notmatch [regex]::Escape($llamaTag)) -and
 Refresh-Path
 $pinnedOpenCode = [string]$runtimeLock.opencode.version
 $openCodeCommand = Get-Command "opencode" -ErrorAction Stop
-$actualOpenCode = ((& $openCodeCommand.Source --version 2>$null | Select-Object -First 1).ToString().Trim())
-if ($LASTEXITCODE -ne 0 -or $actualOpenCode -ne $pinnedOpenCode) { throw "OpenCode runtime version mismatch. Expected $pinnedOpenCode, got $actualOpenCode." }
+# Capture --version defensively: native stderr with EAP=Stop can flip
+# $LASTEXITCODE, so run it under EAP=Continue and verify by content, not exit.
+$eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+try { $actualOpenCode = ((& $openCodeCommand.Source --version 2>$null | Select-Object -First 1).ToString().Trim()) }
+finally { $ErrorActionPreference = $eap }
+if ($actualOpenCode -ne $pinnedOpenCode) {
+    # Re-pin the global opencode package on drift (observed: npm re-resolves to
+    # @latest between boots). Keep "OpenCode runtime version mismatch" fail-closed
+    # as the last line of defense if the re-pin itself cannot restore the pin.
+    $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { & npm.cmd install -g ("opencode-ai@"+$pinnedOpenCode) 2>$null | Out-Null }
+    finally { $ErrorActionPreference = $eap }
+    $openCodeCommand = Get-Command "opencode" -ErrorAction Stop
+    $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    try { $actualOpenCode = ((& $openCodeCommand.Source --version 2>$null | Select-Object -First 1).ToString().Trim()) }
+    finally { $ErrorActionPreference = $eap }
+    if ($actualOpenCode -ne $pinnedOpenCode) { throw "OpenCode runtime version mismatch. Expected $pinnedOpenCode, got $actualOpenCode." }
+}
 $npmRoot = Split-Path -Parent $openCodeCommand.Source
 $openCodePackagePath = Join-Path $npmRoot (Join-Path "node_modules" (([string]$runtimeLock.opencode.npm_package)+"\package.json"))
 $openCodePackage = Get-Content -Raw -LiteralPath $openCodePackagePath | ConvertFrom-Json
