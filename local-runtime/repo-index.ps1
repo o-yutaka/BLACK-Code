@@ -58,7 +58,7 @@ function Get-BlackCodeRepoIndex(
             likely_tests = @()
         }
         $fallback | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 $indexPath
-        "# BLACK Code Repo Delta Context`n`nNo Git index available. Inspect only what the task requires." | Set-Content -Encoding UTF8 $contextPath
+        "# BLACK Repo Capsule`n`nNo Git index available. Use read-only inspection per task: read/grep only what the task requires." | Set-Content -Encoding UTF8 $contextPath
         return [ordered]@{ index = $fallback; index_path = $indexPath; context_path = $contextPath }
     }
 
@@ -162,21 +162,30 @@ function Get-BlackCodeRepoIndex(
     $record | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 $indexPath
 
     $lines = [System.Collections.Generic.List[string]]::new()
-    [void]$lines.Add("# BLACK Code Repo Delta Context")
+    $headLabel = if ($head) { [string]$head } else { "" }
+    if ($headLabel.Length -gt 8) { $headLabel = $headLabel.Substring(0, 8) }
+    $topDirs = @($currentFiles | ForEach-Object { if ($_ -match '^([^/]+)/') { $Matches[1] } else { "." } } | Sort-Object -Unique | Select-Object -First 16)
+
+    [void]$lines.Add("# BLACK Repo Capsule (delta context; expand on demand)")
     [void]$lines.Add("")
-    [void]$lines.Add("Use this persistent index before re-discovering repository structure. New/untracked files are first-class delta and must not be ignored.")
+    [void]$lines.Add("- Cache: $($record.cache_status) | Git HEAD: $headLabel")
+    [void]$lines.Add("- Tracked: $($record.tracked_file_count) | Untracked: $($record.untracked_file_count) | Tests: $($record.test_file_count)")
+    if ($packageRoots.Count -gt 0) { [void]$lines.Add("- Packages: $([string]::Join(', ', @($packageRoots | Select-Object -First 8)))") }
+    if ($topDirs.Count -gt 0) { [void]$lines.Add("- Top dirs: $([string]::Join(', ', $topDirs))") }
+    if (@($record.changed_files).Count -gt 0) {
+        [void]$lines.Add("")
+        [void]$lines.Add("## Changed (first 15)")
+        foreach ($f in @($record.changed_files | Select-Object -First 15)) { [void]$lines.Add("- $f") }
+        $extraChanged = @($record.changed_files).Count - 15
+        if ($extraChanged -gt 0) { [void]$lines.Add("- ... +$extraChanged more (read `git status --short` or the index file for all)") }
+    }
+    if ($likelyTests.Count -gt 0) {
+        [void]$lines.Add("")
+        [void]$lines.Add("## Likely affected tests (first 6)")
+        foreach ($f in @($likelyTests | Select-Object -First 6)) { [void]$lines.Add("- $f") }
+    }
     [void]$lines.Add("")
-    [void]$lines.Add("- Cache: $($record.cache_status)")
-    [void]$lines.Add("- Git HEAD: $head")
-    [void]$lines.Add("- Tracked files: $($record.tracked_file_count)")
-    [void]$lines.Add("- Untracked files: $($record.untracked_file_count)")
-    [void]$lines.Add("- Package roots: $([string]::Join(', ', @($packageRoots | Select-Object -First 30)))")
-    [void]$lines.Add("")
-    [void]$lines.Add("## Changed paths")
-    if ($changedFiles.Count -eq 0) { [void]$lines.Add("- none detected") } else { foreach ($f in @($changedFiles | Select-Object -First 120)) { [void]$lines.Add("- $f") } }
-    [void]$lines.Add("")
-    [void]$lines.Add("## Likely affected tests")
-    if ($likelyTests.Count -eq 0) { [void]$lines.Add("- none precomputed; infer from changed package only if needed") } else { foreach ($f in $likelyTests) { [void]$lines.Add("- $f") } }
+    [void]$lines.Add("Do not pre-scan the repository. Read/grep only what the task requires. Full index: $indexPath")
     $lines | Set-Content -Encoding UTF8 $contextPath
 
     return [ordered]@{ index = $record; index_path = $indexPath; context_path = $contextPath }

@@ -284,7 +284,7 @@ $state=[ordered]@{
     ngram_mod=$false
     forced_cache_reuse=$false
     hf_parallel_workers=$HfDownloadWorkers
-    default_context="auto-8192-12288-16384"
+    default_context="auto-prompt-estimate-24k-32k-48k-64k"
     host_boundary="native-windows-no-docker-no-wsl"
 }
 $state|ConvertTo-Json -Depth 8|Set-Content -Encoding UTF8 (Join-Path $RuntimeDir "state.json")

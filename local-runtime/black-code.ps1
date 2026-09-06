@@ -1,4 +1,6 @@
 param(
+    [ValidateSet('FAST','CODE','DEEP')]
+    [string]$Tier = '',
     [ValidateRange(8192, 65536)]
     [int]$Context = 0
 )
@@ -141,27 +143,51 @@ Copy-Item -Force $instructionSource $instructionRuntimePath
 Copy-Item -Force $repoIndex.context_path $repoContextRuntimePath
 & (Resolve-RuntimeFile "rule-bridge.ps1") -ProjectRoot $projectRoot -Destination $projectRulesRuntimePath
 
+$rulesSource = Resolve-RuntimeFile "black-code-rules.md"
+$rulesRuntimePath = Join-Path $RuntimeDir "black-code-rules.md"
+Copy-Item -Force $rulesSource $rulesRuntimePath
+$execContent = Get-Content -Raw -LiteralPath $instructionRuntimePath
+if ($execContent -match 'RUNTIME_RULES_PATH') {
+    Set-Content -Encoding UTF8 -LiteralPath $instructionRuntimePath -Value ($execContent -replace [regex]::Escape('RUNTIME_RULES_PATH'), $rulesRuntimePath)
+}
+
 $gpuLine = ((Invoke-NvidiaSmi "name,memory.total,memory.free") -split "`r?`n")[0]
 $gpuParts = $gpuLine -split ',' | ForEach-Object { $_.Trim() }
 $gpuName = $gpuParts[0]; $totalVram = [int]$gpuParts[1]; $freeVram = [int]$gpuParts[2]
 $ramGiB = [Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
 $contextReason = "explicit"
 
-if ($Context -eq 0) {
-    if ($totalVram -le 12288) {
-        if ($null -ne $trackedFileCount -and $trackedFileCount -le 150) { $Context = 8192; $contextReason = "auto-small-repo" }
-        elseif ($null -ne $trackedFileCount -and $trackedFileCount -le 800) { $Context = 12288; $contextReason = "auto-medium-repo" }
-        else { $Context = 16384; $contextReason = "auto-large-repo" }
+# Prompt Budget Governor trailhead: OpenCode's base prompt + tool schemas +
+# injected instructions are reduced per Tier, so the default context stays at a
+# common 16K (FAST) instead of needing 32K just to contain the boot prompt.
+# A full all-schema first request measured 21,839 tokens on an empty repo.
+if ($Tier -eq '') {
+    if ($Context -gt 0) {
+        if ($Context -le 18432) { $Tier = 'FAST' }
+        elseif ($Context -le 28672) { $Tier = 'CODE' }
+        else { $Tier = 'DEEP' }
     }
-    elseif ($ramGiB -lt 40) { $Context = 24576; $contextReason = "auto-ram" }
-    else { $Context = 32768; $contextReason = "auto-ram" }
-    $OpenCodeSystemFloor = 16384
-    if ($Context -lt $OpenCodeSystemFloor) {
-        $Context = $OpenCodeSystemFloor
-        $contextReason = "auto-opencode-floor"
-    }
+    elseif ($trackedFileCount -le 150) { $Tier = 'FAST' }
+    elseif ($trackedFileCount -le 800) { $Tier = 'CODE' }
+    else { $Tier = 'DEEP' }
 }
-if ($Context -le 8192) { $OutputLimit = 4096 } elseif ($Context -le 12288) { $OutputLimit = 6144 } else { $OutputLimit = 8192 }
+
+if ($Context -eq 0) {
+    $injectedTokens = 0
+    foreach ($p in @($instructionRuntimePath, $repoContextRuntimePath, $projectRulesRuntimePath)) {
+        if (Test-Path -LiteralPath $p) { $injectedTokens += [Math]::Ceiling((Get-Item -LiteralPath $p).Length / 3.0) }
+    }
+    # Calibrated 2026-09-07: measured FAST first-request prompt = 7,842 tokens
+    # (all-schema pre-budget measured 21,839). Per-tier fixed base below the
+    # injected instruction bytes; reserve is a small safety, not a text budget.
+    $tierBasePrompt = switch ($Tier) { 'FAST' { 7200 } 'CODE' { 9200 } 'DEEP' { 12500 } }
+    $estimatedTokens = $tierBasePrompt + $injectedTokens + 1024
+    $ramCap = if ($ramGiB -lt 40) { 32768 } else { 65536 }
+    $Context = @(16384, 24576, 32768, 49152, 65536) | Where-Object { $_ -ge $estimatedTokens -and $_ -le $ramCap } | Select-Object -First 1
+    if (-not $Context) { $Context = $ramCap }
+    $contextReason = "tier=$Tier prompt-est ($estimatedTokens est)"
+}
+if ($Tier -eq 'FAST') { $OutputLimit = 4096 } elseif ($Context -le 12288) { $OutputLimit = 6144 } else { $OutputLimit = 8192 }
 if ($totalVram -le 16384) { $fitTarget = 1024 } else { $fitTarget = 768 }
 
 $projectIdentity = Get-BlackCodeProjectIdentity $projectRoot
@@ -171,12 +197,23 @@ $BaseUrl = "http://127.0.0.1:$Port/v1"; $HealthUrl = "http://127.0.0.1:$Port/hea
 $ConfigPath = Join-Path $RuntimeDir "opencode.runtime.json"
 $telemetryPluginUri = Convert-ToFileUri (Resolve-RuntimeFile "opencode-telemetry.js")
 $governorPluginUri = Convert-ToFileUri (Resolve-RuntimeFile "opencode-governor.js")
+switch ($Tier) {
+    'FAST' { $toolsAllow = [ordered]@{ read=$true; grep=$true; glob=$true; edit=$true; bash=$true; write=$false; list=$false; todowrite=$false; lsp=$false; task=$false; webfetch=$false; websearch=$false; skill=$false } }
+    'CODE' { $toolsAllow = [ordered]@{ read=$true; write=$true; edit=$true; glob=$true; grep=$true; list=$true; bash=$true; todowrite=$true; lsp=$true; task=$false; webfetch=$false; websearch=$false; skill=$false } }
+    'DEEP' { $toolsAllow = [ordered]@{ read=$true; write=$true; edit=$true; glob=$true; grep=$true; list=$true; bash=$true; task=$true; todowrite=$true; lsp=$true; webfetch=$true; websearch=$true; skill=$true } }
+}
 $config = [ordered]@{
     '$schema' = "https://opencode.ai/config.json"
     model = $ModelId
     instructions = @("black-code-execution.md", "repo-context.md", "project-rules.md")
     plugin = @($telemetryPluginUri, $governorPluginUri)
     permission = [ordered]@{ read="allow"; edit="allow"; glob="allow"; grep="allow"; list="allow"; bash="allow"; task="allow"; todowrite="allow"; webfetch="allow"; websearch="allow"; lsp="allow"; skill="allow"; external_directory="ask"; doom_loop="ask" }
+    # Tool budget, set by the Prompt Budget Governor. Disabled tools drop out of
+    # the model's request schema entirely (verified in opencode-ai runtime:
+    # tools.filter((t,i) => user.tools?.[i] !== false ...)), shrinking the boot
+    # prompt with each tier. Permission stays allow so behavior is gated by the
+    # chosen tier, not by the permission rule.
+    tools = $toolsAllow
     provider = [ordered]@{
         $ProviderId = [ordered]@{
             npm = "@ai-sdk/openai-compatible"; name = "BLACK Code Local Qwen 3.8"
@@ -211,6 +248,7 @@ Write-Host "Project:   $projectRoot"; Write-Host "GPU:       $gpuName"; Write-Ho
 Write-Host "Model:     $ModelFile"; Write-Host "Index:     $($repoIndex.index.cache_status) / $trackedFileCount tracked" -ForegroundColor Green
 Write-Host "Delta:     $(@($repoIndex.index.changed_files).Count) changed / $(@($repoIndex.index.likely_tests).Count) likely tests"
 Write-Host "Rules:     Claude/BLACK bridge active"
+Write-Host "Prompt:    Tier $Tier | tool budget + capsule context (Prompt Budget Governor)"
 Write-Host "Context:   $Context ($contextReason)"; Write-Host "Output:    $OutputLimit max tokens"
 Write-Host ("VRAM fit:  automatic; {0} MiB target headroom" -f $fitTarget)
 Write-Host ("Quant:     BLACK UD-IQ2_XXS / {0} GB / locally pinned SHA" -f $modelManifest.model_size_decimal_gb) -ForegroundColor Green

@@ -51,7 +51,10 @@ foreach ($Directory in $Chain) {
 Add-RuleFile (Join-Path $Root "BLACK.md")
 
 $Body = if ($Blocks.Count) { $Blocks -join "`n`n" } else { "# BLACK Code Project Rules`n`nNo CLAUDE.md, CLAUDE.local.md, BLACK.md, or imported @file rules were found." }
-if ($Body.Length -gt 24000) { $Body = $Body.Substring(0, 24000) + "`n`n[rule bridge truncated at 24000 characters]" }
+if ($Body.Length -gt 6000) {
+    $Sources = @($Blocks | ForEach-Object { if ($_ -match '^# Imported rules: (.+)$') { $Matches[1] } } | Where-Object { $_ })
+    $Body = $Body.Substring(0, 6000) + "`n`n[rule bridge truncated at 6000 characters to protect the prompt budget; read the full source file(s) on demand: $([string]::Join(', ', @($Sources | Select-Object -First 25)))]"
+}
 $Parent = Split-Path -Parent $Destination
 if ($Parent) { New-Item -ItemType Directory -Force -Path $Parent | Out-Null }
 Set-Content -Encoding UTF8 -LiteralPath $Destination -Value $Body

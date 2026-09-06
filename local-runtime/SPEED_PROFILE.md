@@ -32,9 +32,19 @@ The former 10.6 GB IQ2_M artifact is superseded. BLACK Code no longer treats it 
 
 MTP max2 remains the runtime default inherited from the prior measured BLACK Code profile, but it now uses the separate pinned uncensored Q4_0 draft because the main 7.27 model is built `--no-mtp`. Telemetry remains the authority for future speed changes; a larger draft width is not enabled merely because it exists.
 
+## Prompt Budget Governor
+
+A fixed 16K floor was proven insufficient: an all-schema, verbose-rules first request measured 21,839 prompt tokens and was rejected at 16K. Instead of swallowing that into 32K, the governor reduces the first prompt and keeps the common context at 16K:
+
+- Tiers `FAST` / `CODE` / `DEEP` (default by tracked file count, or `-Tier`) set a tool allowlist in the runtime config. Disabled tools drop out of the model request schema entirely (`tools.filter((t,i) => tools?.[i] !== false)`, verified in opencode-ai 1.18.28), so FAST keeps only stem coding tools and drops task/lsp/skill/websearch/webfetch.
+- `repo-context.md` is a compact "Repo Capsule" (counts, HEAD, packages, top dirs, first 15 changed paths); details are read/grepped on demand instead of pre-injected.
+- Execution rules are shipped as R1-R7 IDs in the boot prompt; the full canonical text lives in `black-code-rules.md` and is read on demand. `project-rules.md` is capped at 6,000 chars with source pointers.
+
+Measured 2026-09-07 (empty repo, FAST): real first request = **7,842 prompt tokens** (was 21,839), `opencode run` answered fine on a 16K server. Targets hold: empty repo ≈ 7.8K, so ≤10K goal is met and 16K boots normally, leaving the freed context for actual coding reasoning and code.
+
 ## Auto context
 
-Small repositories should not overpay KV/prefill cost, but the OpenCode system bundle itself needs more than the old 8K auto tier. The 12 GB canonical GPU auto context therefore has a 16,384 floor; <=150 and <=800 tracked files both clamp to 16,384, and larger/unknown repositories use 16,384 as well. RAM-tier machines keep 24,576 / 32,768. `-Context` remains an explicit override.
+Context is selected from the budgeted prompt estimate, not a fixed floor: per-tier fixed base (FAST 7,200 / CODE 9,200 / DEEP 12,500, calibrated from the 7,842 measurement) + measured injected instruction bytes + a 1,024 safety margin, rounded up to 16K/24K/32K/48K/64K and capped at 32,768 under 40 GiB RAM. FAST output is capped at 4,096 to leave prompt headroom; CODE/DEEP get 8,192. `-Context` remains an explicit override.
 
 ## Concurrency
 
