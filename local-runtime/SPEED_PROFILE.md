@@ -13,8 +13,8 @@ Canonical objective: minimize **verified task latency**, not raw tokens/sec.
 - external draft: fixed uncensored Q4_0 MTP GGUF
 - MTP draft max: 2
 - local model parallel slots: 1
-- repository-sized context on 12 GB GPUs: 8,192 / 12,288 / 16,384
-- output cap coupled to context: 4,096 / 6,144 / 8,192
+- repository-sized context on 12 GB GPUs: 16,384 floor (small/medium previously 8,192/12,288 did not fit the OpenCode system prompt; the auto tiers now clamp to 16,384)
+- output cap coupled to context: 8,192
 - KV K/V: q8_0 / q8_0
 - `ngram-mod`: off
 - forced `cache-reuse`: off
@@ -34,7 +34,7 @@ MTP max2 remains the runtime default inherited from the prior measured BLACK Cod
 
 ## Auto context
 
-Small repositories should not pay full KV/prefill cost. On the 12 GB canonical GPU, <=150 tracked files uses 8K, <=800 uses 12K, and larger/unknown repositories use 16K. `-Context` remains an explicit override.
+Small repositories should not overpay KV/prefill cost, but the OpenCode system bundle itself needs more than the old 8K auto tier. The 12 GB canonical GPU auto context therefore has a 16,384 floor; <=150 and <=800 tracked files both clamp to 16,384, and larger/unknown repositories use 16,384 as well. RAM-tier machines keep 24,576 / 32,768. `-Context` remains an explicit override.
 
 ## Concurrency
 

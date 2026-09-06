@@ -149,6 +149,11 @@ if ($Context -eq 0) {
     }
     elseif ($ramGiB -lt 40) { $Context = 24576; $contextReason = "auto-ram" }
     else { $Context = 32768; $contextReason = "auto-ram" }
+    $OpenCodeSystemFloor = 16384
+    if ($Context -lt $OpenCodeSystemFloor) {
+        $Context = $OpenCodeSystemFloor
+        $contextReason = "auto-opencode-floor"
+    }
 }
 if ($Context -le 8192) { $OutputLimit = 4096 } elseif ($Context -le 12288) { $OutputLimit = 6144 } else { $OutputLimit = 8192 }
 if ($totalVram -le 16384) { $fitTarget = 1024 } else { $fitTarget = 768 }
